@@ -10,6 +10,21 @@
  * before the webview can render correctly against a real VS Code theme.
  * Left as-is for M0 (no webview exists yet to theme); do this in M1/M4.
  */
+
+/*
+ * VS Code webview host adaptation (M1, not in the reference styles.css):
+ * in Obsidian the workspace pane gave the container a sized parent chain;
+ * a webview page starts from a plain <html>/<body>, so the 100%-height
+ * container needs the chain rooted here. VS Code's own webview defaults
+ * add body padding — zeroed so the map canvas owns the full viewport.
+ */
+html,
+body {
+	height: 100%;
+	margin: 0;
+	padding: 0;
+}
+
 .mindmap-view-container {
 	position: relative;
 	height: 100%;

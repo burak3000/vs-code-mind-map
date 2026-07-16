@@ -1,4 +1,19 @@
 import * as vscode from "vscode";
+import * as path from "path";
+
+/**
+ * How long to wait after the last onDidChangeTextDocument event before
+ * forwarding the document to the webview. Unlike Obsidian's vault "modify"
+ * (which fires on save), this event fires per keystroke when the user types
+ * in a side-by-side text editor — forwarding each one would trigger a full
+ * re-parse + fresh mount in the webview per keystroke, exactly the
+ * architectural anti-pattern CLAUDE.md rule 6 forbids. Debouncing here is
+ * the plan's own mitigation (§11 risk table: "Large doc edits flood
+ * onDidChangeTextDocument -> Debounce + version-gate"). The value is a
+ * provisional default (flagged in the M1 report); it becomes a proper
+ * setting in M4 alongside the write-back delay.
+ */
+const EXTERNAL_EDIT_FORWARD_DEBOUNCE_MS = 300;
 
 /**
  * CustomTextEditorProvider for `*.md` files (registered with priority
@@ -6,11 +21,14 @@ import * as vscode from "vscode";
  * "Open as Mind Map" / "Reopen Editor With..."; the latter also gives the
  * md <-> map toggle described in the plan (R20) essentially for free).
  *
- * M0 scope only: resolve a webview and show a placeholder. The real
- * TextDocument <-> webview message bridge (send document text on resolve,
- * apply debounced WorkspaceEdits on write-back, forward
- * onDidChangeTextDocument, resolve image URIs) is M1/M2 work per the
- * roadmap (plan §9) and is NOT implemented here.
+ * M1 scope: the host -> webview half of the document bridge. On the
+ * webview's "ready" handshake the full document text is posted (typed
+ * "setDocument", carrying TextDocument.version so the webview can drop
+ * stale messages); afterwards every onDidChangeTextDocument for this
+ * document is forwarded the same way, debounced (see above). All of these
+ * are external edits by definition in M1 — the webview cannot write yet.
+ * The reverse direction (webview -> WorkspaceEdit write-back with
+ * self-write suppression) is M2 and absent here.
  */
 export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 	public static readonly viewType = "mindmapView.editor";
@@ -22,8 +40,11 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 				// Keeping the webview's DOM/JS state alive while the tab is
 				// hidden vs. re-parsing+re-laying-out+re-rendering on every
 				// reveal is a memory-vs-latency trade-off (plan §3.3, item
-				// 11) — not decided here; revisit explicitly before M1 ships
-				// a real interaction loop worth preserving.
+				// 11) — not decided here. With `false`, a hidden->revealed
+				// webview reloads from scratch: its script re-runs, re-sends
+				// "ready", and the handshake below re-syncs it. Revisit as an
+				// explicit user question when M5 hardening measures both
+				// sides of the trade-off.
 				retainContextWhenHidden: false,
 			},
 			supportsMultipleEditorsPerDocument: false,
@@ -42,19 +63,54 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 			enableScripts: true,
 			localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")],
 		};
-		webview.html = this.getHtmlForWebview(webview, document);
+		webview.html = this.getHtmlForWebview(webview);
+
+		const postDocument = () => {
+			// getText()/version are read at send time, so a debounced call
+			// always ships the newest state — intermediate keystrokes are
+			// naturally skipped, never queued.
+			void webview.postMessage({
+				type: "setDocument",
+				text: document.getText(),
+				version: document.version,
+				title: path.parse(document.fileName).name,
+			});
+		};
+
+		let forwardTimer: ReturnType<typeof setTimeout> | undefined;
+		const changeSubscription = vscode.workspace.onDidChangeTextDocument((evt) => {
+			if (evt.document.uri.toString() !== document.uri.toString()) return;
+			if (evt.contentChanges.length === 0) return; // metadata-only events (e.g. language change) — no text to forward
+			if (forwardTimer !== undefined) clearTimeout(forwardTimer);
+			forwardTimer = setTimeout(postDocument, EXTERNAL_EDIT_FORWARD_DEBOUNCE_MS);
+		});
+
+		const messageSubscription = webview.onDidReceiveMessage((msg: { type?: string }) => {
+			// Ready-handshake: the webview script posts "ready" once its
+			// message listener is registered (both on first load and on every
+			// reload after being hidden/revealed) — posting before that risks
+			// the message arriving into a page with no listener yet.
+			if (msg?.type === "ready") postDocument();
+		});
+
+		webviewPanel.onDidDispose(() => {
+			if (forwardTimer !== undefined) clearTimeout(forwardTimer);
+			changeSubscription.dispose();
+			messageSubscription.dispose();
+		});
 	}
 
-	private getHtmlForWebview(webview: vscode.Webview, document: vscode.TextDocument): string {
+	private getHtmlForWebview(webview: vscode.Webview): string {
 		const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "webview.js"));
 		const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "mindmap.css"));
 		const nonce = getNonce();
 
-		// CSP from the start (task requirement): only the nonce-tagged script
-		// may run, styles/images are restricted to the webview's own
-		// resource origin (plus data: for future inline image thumbs, R18),
-		// and everything else defaults closed. No inline scripts/styles
-		// anywhere in this document.
+		// CSP: only the nonce-tagged script may run, styles/images are
+		// restricted to the webview's own resource origin (plus data: for
+		// future inline image thumbs, R18), everything else defaults closed.
+		// No inline scripts or style attributes anywhere in this document
+		// (the renderer styles elements via CSSOM property assignment, which
+		// CSP does not block).
 		const csp = [
 			"default-src 'none'",
 			`img-src ${webview.cspSource} data:`,
@@ -73,10 +129,7 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 </head>
 <body>
 	<div class="mindmap-view-container">
-		<div class="mindmap-placeholder">
-			Mind Map View — M0 placeholder. Parsing/layout/render for
-			"${escapeHtml(document.fileName)}" arrives in M1.
-		</div>
+		<div class="mindmap-placeholder">Loading mind map…</div>
 	</div>
 	<script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -89,13 +142,4 @@ function getNonce(): string {
 	let text = "";
 	for (let i = 0; i < 32; i++) text += chars.charAt(Math.floor(Math.random() * chars.length));
 	return text;
-}
-
-function escapeHtml(text: string): string {
-	return text
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&#039;");
 }
