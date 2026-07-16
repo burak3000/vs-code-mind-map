@@ -1,0 +1,60 @@
+{
+	"name": "mindmap-view",
+	"displayName": "Mind Map View",
+	"description": "XMind-like mind mapping custom editor for markdown files, with true bidirectional sync.",
+	"version": "0.0.1",
+	"publisher": "TODO-set-publisher-id",
+	"private": true,
+	"license": "MIT",
+	"engines": {
+		"vscode": "^1.85.0"
+	},
+	"categories": [
+		"Visualization",
+		"Other"
+	],
+	"main": "./dist/extension.js",
+	"activationEvents": [],
+	"contributes": {
+		"customEditors": [
+			{
+				"viewType": "mindmapView.editor",
+				"displayName": "Mind Map",
+				"selector": [
+					{
+						"filenamePattern": "*.md"
+					}
+				],
+				"priority": "option"
+			}
+		],
+		"commands": [
+			{
+				"command": "mindmapView.openAsMindMap",
+				"title": "Open as Mind Map"
+			}
+		]
+	},
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc -noEmit -p tsconfig.json && tsc -noEmit -p tsconfig.webview.json && node esbuild.config.mjs production",
+		"fixtures": "node scripts/generate-fixtures.mjs",
+		"bench:m1": "node scripts/bench-m1.mjs",
+		"bench:m2": "node scripts/bench-m2.mjs",
+		"bench:images": "node scripts/bench-images.mjs",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"devDependencies": {
+		"@types/node": "^20.11.0",
+		"@types/vscode": "^1.85.0",
+		"builtin-modules": "^3.3.0",
+		"esbuild": "^0.28.1",
+		"jsdom": "^29.1.1",
+		"typescript": "^5.3.3",
+		"vitest": "^3.2.5"
+	},
+	"dependencies": {
+		"d3-flextree": "^2.1.2"
+	}
+}

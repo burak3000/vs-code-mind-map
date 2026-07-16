@@ -1,0 +1,24 @@
+{
+	"compilerOptions": {
+		"baseUrl": ".",
+		"module": "ESNext",
+		"target": "ES2020",
+		"lib": ["DOM", "DOM.Iterable", "ES2020"],
+		"moduleResolution": "node",
+		"strict": true,
+		"noImplicitAny": true,
+		"isolatedModules": true,
+		"skipLibCheck": true,
+		"inlineSourceMap": true,
+		"inlineSources": true,
+		// The webview runs in a browser sandbox, not Node — deliberately exclude
+		// @types/node here. Mixing it with the "DOM" lib above causes duplicate
+		// global declarations (fetch/AbortController/etc. clash between
+		// @types/node's undici types and lib.dom.d.ts), which is why the
+		// extension host (tsconfig.json) and webview (this file) are
+		// type-checked as two separate projects instead of one shared
+		// tsconfig — see DECISIONS.md.
+		"types": []
+	},
+	"include": ["webview/**/*.ts"]
+}
