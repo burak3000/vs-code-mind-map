@@ -1,0 +1,318 @@
+/*
+ * TODO(M4 theming): ported verbatim from the reference Obsidian plugin's
+ * styles.css. It still references Obsidian CSS custom properties (e.g.
+ * `var(--text-muted)`, `.theme-dark`) that don't exist in a VS Code webview.
+ * Per the plan (§8, §4 port-map table: "styles.css -> media/mindmap.css:
+ * swap Obsidian CSS vars for --vscode-* theme vars"), this file needs a
+ * pass that maps every Obsidian variable to the matching `--vscode-*`
+ * variable (and `.theme-dark`/`.theme-light` selectors to VS Code's
+ * `body.vscode-dark` / `body.vscode-light` / `body.vscode-high-contrast`)
+ * before the webview can render correctly against a real VS Code theme.
+ * Left as-is for M0 (no webview exists yet to theme); do this in M1/M4.
+ */
+.mindmap-view-container {
+	position: relative;
+	height: 100%;
+	overflow: hidden;
+}
+
+/*
+ * Per-subtopic branch palette (R9). Two tone sets so branches stay legible
+ * on both light and dark themes (plan N4: theme adaptation) — light theme
+ * uses mid-dark saturated hues readable on a light background; dark theme
+ * uses the lighter shade of the same hue for contrast against a dark one.
+ */
+.mindmap-view-container {
+	--mm-color-c0: #e03131;
+	--mm-color-c1: #1971c2;
+	--mm-color-c2: #2f9e44;
+	--mm-color-c3: #e8590c;
+	--mm-color-c4: #9c36b5;
+	--mm-color-c5: #0c8599;
+	--mm-color-c6: #e64980;
+	--mm-color-c7: #f08c00;
+}
+
+.theme-dark .mindmap-view-container {
+	--mm-color-c0: #ff8787;
+	--mm-color-c1: #4dabf7;
+	--mm-color-c2: #69db7c;
+	--mm-color-c3: #ffa94d;
+	--mm-color-c4: #da77f2;
+	--mm-color-c5: #3bc9db;
+	--mm-color-c6: #f783ac;
+	--mm-color-c7: #ffd43b;
+}
+
+.mindmap-placeholder {
+	padding: var(--size-4-4);
+	color: var(--text-muted);
+}
+
+.mm-svg {
+	display: block;
+	background: var(--background-primary);
+	touch-action: none;
+	cursor: grab;
+}
+
+/* R10, high-fidelity taper: the edge is a filled variable-width ribbon
+   polygon (see SvgRenderer.edgePath), not a stroked line — width is baked
+   into the path geometry itself, so no stroke is drawn. */
+.mm-edge {
+	stroke: none;
+	fill: var(--text-faint);
+}
+
+/* Only the main topic (root) gets a visible box — sub-topics render as bare
+   text over the connecting line, XMind-style. The rect stays in the DOM for
+   every node (hit-testing + the selection/drop-target outline below), just
+   invisible by default; `pointer-events: all` keeps it clickable/draggable
+   even though there's nothing painted to hit-test against. */
+.mm-node-rect {
+	fill: none;
+	stroke: none;
+	pointer-events: all;
+}
+
+.mm-node.mm-node-root .mm-node-rect {
+	fill: var(--background-secondary);
+	stroke: var(--background-modifier-border);
+	stroke-width: 1;
+}
+
+.mm-node-text {
+	fill: var(--text-normal);
+	/* font-size is set per-node as an element attribute (SvgRenderer,
+	   depth-scaled — R15: visual hierarchy by size), not here: a CSS rule
+	   here would win the cascade over that presentation attribute and
+	   silently flatten every node back to one size. */
+	pointer-events: none;
+	user-select: none;
+}
+
+.mm-node {
+	cursor: pointer;
+}
+
+.mm-svg.mm-animated .mm-node {
+	transition: transform 150ms ease;
+}
+
+.mm-edge.mm-color-c0 { fill: var(--mm-color-c0); }
+.mm-edge.mm-color-c1 { fill: var(--mm-color-c1); }
+.mm-edge.mm-color-c2 { fill: var(--mm-color-c2); }
+.mm-edge.mm-color-c3 { fill: var(--mm-color-c3); }
+.mm-edge.mm-color-c4 { fill: var(--mm-color-c4); }
+.mm-edge.mm-color-c5 { fill: var(--mm-color-c5); }
+.mm-edge.mm-color-c6 { fill: var(--mm-color-c6); }
+.mm-edge.mm-color-c7 { fill: var(--mm-color-c7); }
+
+/* Root has no branch color of its own (see resolveNodeColorKey), so these
+   only ever match sub-topics — with no box left to carry a colored border,
+   the branch color accents the text itself instead (plan §9.2: "node
+   border/text accents match branch color"). */
+.mm-node.mm-color-c0 .mm-node-text { fill: var(--mm-color-c0); }
+.mm-node.mm-color-c1 .mm-node-text { fill: var(--mm-color-c1); }
+.mm-node.mm-color-c2 .mm-node-text { fill: var(--mm-color-c2); }
+.mm-node.mm-color-c3 .mm-node-text { fill: var(--mm-color-c3); }
+.mm-node.mm-color-c4 .mm-node-text { fill: var(--mm-color-c4); }
+.mm-node.mm-color-c5 .mm-node-text { fill: var(--mm-color-c5); }
+.mm-node.mm-color-c6 .mm-node-text { fill: var(--mm-color-c6); }
+.mm-node.mm-color-c7 .mm-node-text { fill: var(--mm-color-c7); }
+
+.mm-node-link {
+	fill: var(--link-color, var(--text-accent));
+	text-decoration: underline;
+	pointer-events: auto;
+	cursor: pointer;
+}
+
+.mm-node.mm-drop-target .mm-node-rect {
+	stroke: var(--interactive-accent);
+	stroke-width: 2;
+	stroke-dasharray: 3 2;
+}
+
+/* Same-level reorder (drag a node and drop it near the top/bottom edge of a
+   sibling instead of on its center): a plain insertion line spanning the
+   target's width, not a highlight box — that's what distinguishes "reorder
+   next to" from "nest into" (.mm-drop-target above) at a glance. */
+.mm-drop-indicator {
+	stroke: var(--interactive-accent);
+	stroke-width: 2;
+	pointer-events: none;
+}
+
+/* Selection must win over the root's own default border — kept last in
+   source order (equal specificity to the `.mm-node-root` rule above). For a
+   non-root node this is the *only* time its (normally invisible) box shows
+   an outline at all. */
+.mm-node.mm-selected .mm-node-rect {
+	stroke: var(--interactive-accent);
+	stroke-width: 2;
+}
+
+/* Multi-select (R-multi-select): every selected node gets the outline
+   above; the primary/anchor additionally gets a thicker one so it stays
+   visually distinct (keyboard nav, inline-editor, and Shift+click range
+   anchor all target the primary specifically). */
+.mm-node.mm-selected-primary .mm-node-rect {
+	stroke-width: 3;
+}
+
+/* Drag-resize handle: a thin sliver at the node's outer edge. Always
+   present in the DOM (cheap: one small rect per node) and always
+   hit-testable, but only visually surfaced on hover/selection so the
+   "no box" aesthetic (above) isn't cluttered by a resize affordance on
+   every node all the time. */
+.mm-resize-handle {
+	fill: var(--interactive-accent);
+	opacity: 0;
+	cursor: ew-resize;
+	pointer-events: all;
+}
+
+.mm-node:hover .mm-resize-handle,
+.mm-node.mm-selected .mm-resize-handle {
+	opacity: 0.5;
+}
+
+.mm-fold-badge {
+	cursor: pointer;
+}
+
+.mm-fold-badge circle {
+	fill: var(--background-modifier-border);
+}
+
+.mm-fold-badge.mm-fold-badge-folded circle {
+	fill: var(--interactive-accent);
+}
+
+.mm-fold-badge text {
+	fill: var(--text-muted);
+	font-size: 9px;
+	pointer-events: none;
+	user-select: none;
+}
+
+.mm-fold-badge.mm-fold-badge-folded text {
+	fill: var(--text-on-accent);
+}
+
+/* Image thumbnail (R-image-display, decision A: fixed-size thumb, click
+   opens the image). Placeholder shows until the image loads; the missing
+   glyph only shows on a load error (both toggled by the group's own
+   mm-image-loaded/mm-image-error class, set by the <image>'s load/error
+   listeners — no JS-driven style writes beyond those two class toggles). */
+.mm-node-image {
+	cursor: pointer;
+	display: none;
+}
+
+.mm-image-placeholder {
+	fill: var(--background-modifier-border);
+}
+
+.mm-node-image-group.mm-image-loaded .mm-image-placeholder {
+	display: none;
+}
+
+.mm-node-image-group.mm-image-loaded .mm-node-image {
+	display: inline;
+}
+
+.mm-image-missing {
+	display: none;
+	fill: var(--text-error);
+	font-size: 20px;
+	pointer-events: none;
+	user-select: none;
+}
+
+.mm-node-image-group.mm-image-error .mm-image-missing {
+	display: inline;
+}
+
+.mm-node-image-group.mm-image-error .mm-image-placeholder {
+	fill: var(--background-modifier-error);
+}
+
+.mm-inline-editor {
+	box-sizing: border-box;
+	z-index: 50;
+	font-size: 12px;
+	font-family: inherit;
+	text-align: center;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	border: 1px solid var(--interactive-accent);
+	border-radius: 4px;
+	padding: 2px 4px;
+	outline: none;
+	resize: none;
+	overflow-y: auto;
+	white-space: pre-wrap;
+	line-height: 1.3;
+}
+
+.mm-search-panel {
+	position: absolute;
+	top: var(--size-4-2, 8px);
+	right: var(--size-4-2, 8px);
+	z-index: 60;
+	width: 280px;
+	max-height: 70%;
+	display: flex;
+	flex-direction: column;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	box-shadow: var(--shadow-s, 0 2px 8px rgba(0, 0, 0, 0.2));
+	overflow: hidden;
+}
+
+.mm-search-input {
+	box-sizing: border-box;
+	width: 100%;
+	padding: var(--size-4-2, 8px);
+	border: none;
+	border-bottom: 1px solid var(--background-modifier-border);
+	background: transparent;
+	color: var(--text-normal);
+	font-size: 13px;
+	outline: none;
+}
+
+.mm-search-count {
+	padding: 2px var(--size-4-2, 8px);
+	font-size: 11px;
+	color: var(--text-muted);
+}
+
+.mm-search-count:empty {
+	padding: 0;
+}
+
+.mm-search-results {
+	overflow-y: auto;
+}
+
+.mm-search-result {
+	padding: var(--size-4-1, 4px) var(--size-4-2, 8px);
+	font-size: 12px;
+	color: var(--text-normal);
+	cursor: pointer;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.mm-search-result:hover {
+	background: var(--background-modifier-hover);
+}
+
+.mm-search-result-active {
+	background: var(--background-modifier-active-hover, var(--background-modifier-hover));
+}
