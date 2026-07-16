@@ -121,3 +121,82 @@ measure at all (M0 ships a placeholder, not the interaction loop). Per
 CLAUDE.md, the authoritative check is the real VS Code Extension
 Development Host (F5) once M1 exists; nothing UI-observable can be verified
 in this environment. Explicitly not claimed here.
+
+## M1 — Read-only map in the webview
+
+No ported core file was touched in M1 (verified: `webview/model|layout|
+render|sync|controller` are still byte-identical to the reference repo),
+so `bench:m1`/`bench:m2` were not re-run — the M0 numbers above remain the
+current baseline for those paths per the coordinator's instruction.
+
+### `npm run bench:open` (new in M1) — the full webview open path
+
+Measures exactly the sequence `webview/main.ts::buildFromScratch()` runs
+when the host posts the document: parse -> assignMissingColors ->
+assignMissingSides -> computeLayout -> `SvgRenderer` construction + mount,
+in jsdom (1200x800 fake viewport):
+
+| Fixture | Parse+colors+sides+layout | Mount | Total | Budget | Status |
+|---|---|---|---|---|---|
+| 100 nodes | 3.0 ms | 21.2 ms | 24.1 ms | 300 ms | OK |
+| 500 nodes | 4.9 ms | 7.3 ms | 12.2 ms | 300 ms | OK |
+| 2,000 nodes | 15.0 ms | 2.1 ms | 17.1 ms | 1,000 ms | OK |
+| 5,000 nodes (stress) | 30.7 ms | 1.8 ms | 32.5 ms | 2,000 ms | OK, no freeze |
+
+The seemingly inverted mount column (100 nodes costs more than 5,000) is
+the ported viewport culling working as designed plus JIT warm-up on the
+first iteration: below the 300-node culling threshold every node gets DOM
+elements created at mount (100-node fixture — and it runs first, cold);
+above it, only in-viewport nodes do, so the 2,000/5,000-node mounts create
+DOM for just the handful of nodes inside the fake 1200x800 viewport. This
+matches the reference repo's design (culling threshold 300, see its
+DECISIONS.md) — the total is what the budget governs, and worst case uses
+8% of its budget (100 nodes) / 1.7% (2,000 nodes).
+
+### Bundle sizes (`npm run build`)
+
+| Bundle | Raw | Gzip | Budget | M0 |
+|---|---|---|---|---|
+| `dist/extension.js` (host) | 3,038 B (3.0 KB) | 1,639 B (1.6 KB) | < 500 KB target / 1 MB ceiling | 2.8 KB |
+| `media/webview.js` (webview) | 46,685 B (45.6 KB) | 14,778 B (14.4 KB) | < 500 KB target / 1 MB ceiling | 154 B |
+
+The webview jump predicted in the M0 entry happened: the bundle now
+actually contains the ported parser/layout/renderer/controller plus
+`d3-flextree`. 45.6 KB minified is larger than the reference plugin's M1
+bundle (14.4 KB) because this bundle already includes the full ported
+`SvgRenderer` (with culling/drag/image code paths), `Controller`,
+`CommandStack`, serializer, and reconcile — modules the reference only
+added in its M2+ — while its M1 bundle had just parser+layout+an early
+renderer. Both bundles combined use ~10% of the 500 KB target.
+
+### Test suite
+
+302 passed / 0 skipped (25 files) — includes the two re-enabled UI test
+files (`inlineEditor`, `searchPanel`, 20 tests) and the new
+`webviewBootstrap.test.ts` (6 tests: ready-handshake, mount-on-setDocument,
+version-gate stale drop, click-select + background-clear, external-edit
+rebuild with selection carry-over, unknown-message ignore).
+
+### REMAINING FOR HUMAN — real-window verification (M1 exit criterion)
+
+The M1 exit criterion "a 2,000-node file opens within budget inside a real
+VS Code window" is **not verified**. Everything above is headless jsdom —
+no pixels are painted, no real Chromium layout/GC runs, and the
+host->webview postMessage hop isn't exercised end-to-end (the bootstrap
+test fakes `acquireVsCodeApi`). What a human needs to do, exactly as the
+reference repo's benchmarks.md prescribes for its own dev-vault checks:
+
+1. `npm run dev` (or `npm run build`), then F5 in VS Code to launch the
+   Extension Development Host.
+2. Open `fixtures/2000-nodes.md`, right-click tab -> "Reopen Editor With…"
+   -> Mind Map (or the "Open as Mind Map" command).
+3. Confirm open-to-interactive < 1 s (2 s hard ceiling), pan/zoom at 60
+   fps (DevTools Performance panel: Developer: Open Webview Developer
+   Tools), click-selection responds instantly, and editing the md in a
+   split view updates the map after the ~300 ms forward debounce.
+4. Same pass on `5000-nodes.md`: must degrade gracefully, never freeze.
+
+Also not yet verified in a real window: the styling pass — mindmap.css
+still uses Obsidian CSS variables (M4 theming TODO), so colors/fonts will
+fall back to CSS defaults in a VS Code webview. Functional, not pretty, by
+design at this milestone.

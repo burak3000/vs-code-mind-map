@@ -40,6 +40,7 @@
 		"build": "tsc -noEmit -p tsconfig.json && tsc -noEmit -p tsconfig.webview.json && node esbuild.config.mjs production",
 		"fixtures": "node scripts/generate-fixtures.mjs",
 		"bench:m1": "node scripts/bench-m1.mjs",
+		"bench:open": "node scripts/bench-open.mjs",
 		"bench:m2": "node scripts/bench-m2.mjs",
 		"bench:images": "node scripts/bench-images.mjs",
 		"test": "vitest run",

@@ -142,3 +142,89 @@ question, not a performance question, which is why it wasn't escalated
 under CLAUDE.md rule 3 (that rule is specifically for performance-vs-X
 trade-offs). Flagging per the spirit of "ask rather than guess" anyway,
 since it's a real fork in what "M0 done" means.
+
+**Follow-up (2026-07-16, M1):** resolved by the user — port them now. Done:
+`webview/ui/InlineEditor.ts` and `webview/ui/SearchPanel.ts` ported verbatim
+(byte-identical), both test files re-enabled with only the import path
+changed; suite fully green. `LinkModal.ts` stays deferred to M3: it
+genuinely extends Obsidian's `Modal` and builds its UI with Obsidian's
+`Setting` helper, so it must be rewritten as a plain DOM overlay per the
+plan's port-map table, not ported.
+
+---
+
+## 2026-07-16 — M1: host->webview document bridge — ready-handshake, version gate, debounced external-edit forwarding
+
+**Context:** M1 needs the document text in the webview (on open, and again
+after edits made in a side-by-side text editor). Three VS Code-specific
+hazards shaped the design:
+
+1. `postMessage` into a webview whose script hasn't registered its
+   `message` listener yet is silently lost — so the webview posts
+   `{type:"ready"}` first and the host replies with the document. This
+   also self-heals the `retainContextWhenHidden: false` reload case: a
+   hidden->revealed webview re-runs its script, re-sends "ready", and gets
+   re-synced without any host-side visibility tracking.
+2. Message delivery order isn't contractual — every `setDocument` carries
+   `TextDocument.version`, and the webview drops any message whose version
+   is <= the version already rendered (the coordinator-required version
+   gate).
+3. Unlike Obsidian's vault `modify` event (fires on save),
+   `onDidChangeTextDocument` fires **per keystroke** when the user types
+   in a split text editor. Forwarding each event would make the webview
+   full-re-parse + fresh-mount per keystroke — the exact architectural
+   anti-pattern CLAUDE.md rule 6 names. The host therefore debounces
+   forwarding (300 ms provisional default), and because the debounced
+   callback reads `document.getText()`/`.version` at fire time, it always
+   ships the newest state — intermediate keystrokes are skipped, never
+   queued.
+
+**Decision:** ready-handshake + version gate + 300 ms trailing-edge
+debounce in `src/MindMapEditorProvider.ts`. The debounce *mechanism* is
+plan-approved (§11 risk table: "Debounce + version-gate reconciliation");
+the *value* (300 ms) is a provisional default flagged in the M1 report — it
+becomes a user-visible setting in M4 alongside the write-back delay, and is
+trivially changeable (a single constant).
+
+**Alternatives considered:** forwarding raw change events and letting the
+webview debounce — rejected: it ships one full document text across the
+process boundary per keystroke (serialization cost scales with document
+size, per-keystroke, for zero benefit). Sending diffs instead of full
+text — the plan (§6) marks this "ideally" for later; full-text is the
+approved starting point, measured before optimizing.
+
+**Cost:** one full-document string copy across the process boundary per
+debounced external edit; at 5,000 nodes the fixture is ~200 KB, well under
+any per-interaction budget since it never happens on the keystroke path of
+the mind map itself (CLAUDE.md rule 7 — the interaction loop never crosses
+the boundary; this path only runs when the *other* editor changed the
+file).
+
+---
+
+## 2026-07-16 — M1: webview bootstrap mirrors the reference view's build/rebuild paths (carried over from reference)
+
+**Context:** `webview/main.ts` is the rewritten equivalent of the reference
+repo's `MindMapView.ts` (the one "real porting work" row in the plan's §4
+table). All render-pipeline behavior was already decided and user-approved
+in the reference repo.
+
+**Decision:** `buildFromScratch()` (parse -> assignMissingColors ->
+assignMissingSides -> computeLayout -> Controller -> SvgRenderer.mount, with
+click-to-select / ctrl-toggle / shift-range / background-clear wiring) and
+`rebuildFromExternalText()` (full re-parse + fresh mount with first-level
+color/side carry-over by structural position and selection preservation via
+`findEquivalentNode`) are line-for-line transcriptions of the reference's
+`buildFromScratch()` / `onVaultModify()` with the M2/M3 wiring omitted (not
+stubbed): no inline editor, no write-back/serialize tail in `onChange()`,
+no dblclick/fold/link/image/context-menu/drag handlers, no keyboard map.
+Carried over from reference: full re-parse on external edit (explicitly
+allowed by the plan as the M2 fallback; incremental re-parse is a logged
+non-implemented optimization there too), pan/zoom/culling/dirty-tracking
+all inside the ported `SvgRenderer` untouched.
+
+**Cost:** measured — see `benchmarks.md` M1 section (`npm run bench:open`):
+the full open path (parse+colors+sides+layout+mount) is 17.1 ms for 2,000
+nodes and 32.5 ms for 5,000 in jsdom, 1.7% / 1.6% of the respective
+budgets. Real-window paint cost remains unverified (no VS Code window in
+this environment — flagged, not claimed).
