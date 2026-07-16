@@ -1,0 +1,7 @@
+node_modules/
+dist/
+media/webview.js
+fixtures/*.md
+*.vsix
+*.log
+.DS_Store
