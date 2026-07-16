@@ -1,25 +1,4 @@
 // @vitest-environment jsdom
-//
-// SKIPPED in M0: this test targets `webview/ui/InlineEditor.ts`, ported
-// verbatim from the reference repo's `src/view/InlineEditor.ts`. That file
-// has zero Obsidian-API dependencies (it's a plain DOM overlay) and could
-// technically be ported now — but the M0 task scope explicitly lists only
-// model/layout/render/sync/controller for porting; `view/*` -> `webview/ui/*`
-// is scoped to M1 (webview bootstrap) / M2 (inline editing) in the roadmap
-// (plan §9, §4 port-map table). Rather than pull UI work forward, the test
-// is preserved verbatim below (import path pre-adjusted) and skipped so it
-// activates with a one-line diff once InlineEditor.ts lands in M1/M2.
-//
-// This is a scope call, not a "genuinely depends on Obsidian" call — flagged
-// as an open question in the M0 report for the user to confirm or override.
-import { describe, it } from "vitest";
-
-describe.skip("InlineEditor (source not yet ported — see comment above; will move to test/ui/ or stay here once webview/ui/InlineEditor.ts exists in M1/M2)", () => {
-	it("placeholder — original suite preserved in git history / see comment block below", () => {});
-});
-
-/* Original suite, ready to re-enable once `webview/ui/InlineEditor.ts` exists:
-
 import { describe, expect, it, vi } from "vitest";
 import { InlineEditor } from "../webview/ui/InlineEditor";
 
@@ -31,7 +10,7 @@ function fireKey(input: HTMLTextAreaElement, key: string, opts: Partial<Keyboard
 	return evt;
 }
 
-// jsdom never computes real layout, so `scrollWidth` is always 0 — stub it to a fixed px-per-character so the width-growth logic (which only reads `scrollWidth`) is exercised meaningfully. Returns a restore function.
+/** jsdom never computes real layout, so `scrollWidth` is always 0 — stub it to a fixed px-per-character so the width-growth logic (which only reads `scrollWidth`) is exercised meaningfully. Returns a restore function. */
 function stubScrollWidth(pxPerChar: number): () => void {
 	const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollWidth");
 	Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
@@ -233,5 +212,3 @@ describe("InlineEditor", () => {
 		expect(onCancel).not.toHaveBeenCalled();
 	});
 });
-
-*/

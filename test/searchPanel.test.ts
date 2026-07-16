@@ -1,25 +1,4 @@
 // @vitest-environment jsdom
-//
-// SKIPPED in M0: this test targets `webview/ui/SearchPanel.ts`, ported
-// verbatim from the reference repo's `src/view/SearchPanel.ts`. That file
-// has zero Obsidian-API dependencies (it's a plain DOM overlay) and could
-// technically be ported now — but the M0 task scope explicitly lists only
-// model/layout/render/sync/controller for porting; `view/*` -> `webview/ui/*`
-// is scoped to M3 (search panel) in the roadmap (plan §9, §4 port-map table).
-// Rather than pull UI work forward, the test is preserved verbatim below
-// (import path pre-adjusted) and skipped so it activates with a one-line
-// diff once SearchPanel.ts lands in M3.
-//
-// This is a scope call, not a "genuinely depends on Obsidian" call — flagged
-// as an open question in the M0 report for the user to confirm or override.
-import { describe, it } from "vitest";
-
-describe.skip("SearchPanel (source not yet ported — see comment above; will move to test/ui/ or stay here once webview/ui/SearchPanel.ts exists in M3)", () => {
-	it("placeholder — original suite preserved in comment block below", () => {});
-});
-
-/* Original suite, ready to re-enable once `webview/ui/SearchPanel.ts` exists:
-
 import { describe, expect, it, vi } from "vitest";
 import { SearchPanel } from "../webview/ui/SearchPanel";
 import { SearchOutcome } from "../webview/model/search";
@@ -161,5 +140,3 @@ describe("SearchPanel", () => {
 		document.body.removeChild(host);
 	});
 });
-
-*/
