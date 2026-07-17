@@ -331,3 +331,125 @@ body {
 .mm-search-result-active {
 	background: var(--background-modifier-active-hover, var(--background-modifier-hover));
 }
+
+/* Ctrl/Cmd+K link editor (R5) — plain DOM overlay, the one genuine rewrite
+   vs. the reference (which extends Obsidian's Modal/Setting; see
+   webview/ui/LinkModal.ts's header comment). */
+.mm-link-modal-backdrop {
+	position: absolute;
+	inset: 0;
+	z-index: 70;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(0, 0, 0, 0.4);
+}
+
+.mm-link-modal {
+	width: 320px;
+	max-width: 90%;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	box-shadow: var(--shadow-s, 0 2px 8px rgba(0, 0, 0, 0.3));
+	padding: var(--size-4-4, 16px);
+}
+
+.mm-link-modal-title {
+	margin: 0 0 var(--size-4-3, 12px) 0;
+	font-size: 14px;
+}
+
+.mm-link-modal-row {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-bottom: var(--size-4-3, 12px);
+}
+
+.mm-link-modal-label {
+	font-size: 12px;
+	color: var(--text-muted);
+}
+
+.mm-link-modal-desc {
+	font-size: 11px;
+	color: var(--text-muted);
+}
+
+.mm-link-modal-input,
+.mm-link-modal-select {
+	box-sizing: border-box;
+	width: 100%;
+	padding: 4px 6px;
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	font-size: 13px;
+}
+
+.mm-link-modal-buttons {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--size-4-2, 8px);
+	margin-top: var(--size-4-2, 8px);
+}
+
+.mm-link-modal-buttons button {
+	padding: 4px 12px;
+	border-radius: 4px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	cursor: pointer;
+	font-size: 12px;
+}
+
+.mm-link-modal-save {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border-color: var(--interactive-accent);
+}
+
+/* Right-click node menu (R17) — plain DOM overlay (see
+   webview/ui/ContextMenu.ts's header comment: no VS Code webview equivalent
+   of Obsidian's native Menu for arbitrary custom items). */
+.mm-context-menu {
+	position: absolute;
+	z-index: 80;
+	min-width: 180px;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	box-shadow: var(--shadow-s, 0 2px 8px rgba(0, 0, 0, 0.3));
+	padding: 4px 0;
+	font-size: 12px;
+}
+
+.mm-context-menu-item {
+	padding: 6px var(--size-4-3, 12px);
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.mm-context-menu-item:hover {
+	background: var(--background-modifier-hover);
+}
+
+.mm-context-menu-item-disabled {
+	color: var(--text-faint);
+	cursor: default;
+}
+
+.mm-context-menu-item-disabled:hover {
+	background: none;
+}
+
+.mm-context-menu-separator {
+	height: 1px;
+	margin: 4px 0;
+	background: var(--background-modifier-border);
+}

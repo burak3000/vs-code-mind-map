@@ -32,6 +32,93 @@
 			{
 				"command": "mindmapView.openAsMindMap",
 				"title": "Open as Mind Map"
+			},
+			{
+				"command": "mindmapView.undo",
+				"title": "Mind Map: Undo"
+			},
+			{
+				"command": "mindmapView.redo",
+				"title": "Mind Map: Redo"
+			},
+			{
+				"command": "mindmapView.search",
+				"title": "Mind Map: Search"
+			},
+			{
+				"command": "mindmapView.rebalance",
+				"title": "Mind Map: Rebalance"
+			},
+			{
+				"command": "mindmapView.linkEditor",
+				"title": "Mind Map: Edit Link"
+			},
+			{
+				"command": "mindmapView.toggleFold",
+				"title": "Mind Map: Toggle Fold"
+			},
+			{
+				"command": "mindmapView.toggleToText",
+				"title": "Mind Map: Switch to Markdown Editor"
+			},
+			{
+				"command": "mindmapView.toggleToMindMap",
+				"title": "Mind Map: Switch to Mind Map Editor"
+			}
+		],
+		"keybindings": [
+			{
+				"command": "mindmapView.undo",
+				"key": "ctrl+z",
+				"mac": "cmd+z",
+				"when": "activeCustomEditorId == 'mindmapView.editor'"
+			},
+			{
+				"command": "mindmapView.redo",
+				"key": "ctrl+shift+z",
+				"mac": "cmd+shift+z",
+				"when": "activeCustomEditorId == 'mindmapView.editor'"
+			},
+			{
+				"command": "mindmapView.redo",
+				"key": "ctrl+y",
+				"when": "activeCustomEditorId == 'mindmapView.editor'"
+			},
+			{
+				"command": "mindmapView.search",
+				"key": "ctrl+f",
+				"mac": "cmd+f",
+				"when": "activeCustomEditorId == 'mindmapView.editor'"
+			},
+			{
+				"command": "mindmapView.rebalance",
+				"key": "ctrl+shift+b",
+				"mac": "cmd+shift+b",
+				"when": "activeCustomEditorId == 'mindmapView.editor'"
+			},
+			{
+				"command": "mindmapView.linkEditor",
+				"key": "ctrl+k",
+				"mac": "cmd+k",
+				"when": "activeCustomEditorId == 'mindmapView.editor'"
+			},
+			{
+				"command": "mindmapView.toggleFold",
+				"key": "ctrl+/",
+				"mac": "cmd+/",
+				"when": "activeCustomEditorId == 'mindmapView.editor'"
+			},
+			{
+				"command": "mindmapView.toggleToText",
+				"key": "ctrl+m",
+				"mac": "cmd+m",
+				"when": "activeCustomEditorId == 'mindmapView.editor'"
+			},
+			{
+				"command": "mindmapView.toggleToMindMap",
+				"key": "ctrl+m",
+				"mac": "cmd+m",
+				"when": "editorTextFocus && editorLangId == 'markdown'"
 			}
 		]
 	},

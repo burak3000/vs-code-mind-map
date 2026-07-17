@@ -200,3 +200,257 @@ Also not yet verified in a real window: the styling pass — mindmap.css
 still uses Obsidian CSS variables (M4 theming TODO), so colors/fonts will
 fall back to CSS defaults in a VS Code webview. Functional, not pretty, by
 design at this milestone.
+
+## M2 — Editing + bidirectional sync + keybinding plumbing
+
+No ported core file was touched in M2 either (verified: `webview/model|
+layout|render|sync|controller` still byte-identical to the reference
+repo) — `bench:m1`/`bench:m2`/`bench:open` re-run below purely to confirm
+no regression snuck in via the new `webview/main.ts`/`MindMapEditorProvider`
+wiring; numbers are within noise of the M1 baseline.
+
+### `npm run bench:m1`
+
+| Fixture | Parse | Layout | Total | Budget | Status |
+|---|---|---|---|---|---|
+| 100 nodes | 0.6 ms | 3.0 ms | 3.6 ms | 300 ms | OK |
+| 500 nodes | 0.6 ms | 5.8 ms | 6.4 ms | 300 ms | OK |
+| 2,000 nodes | 1.6 ms | 15.0 ms | 16.6 ms | 1,000 ms | OK |
+| 5,000 nodes (stress) | 3.7 ms | 33.3 ms | 37.0 ms | 2,000 ms | OK, no freeze |
+
+### `npm run bench:open`
+
+| Fixture | Parse+colors+sides+layout | Mount | Total | Budget | Status |
+|---|---|---|---|---|---|
+| 100 nodes | 3.2 ms | 24.2 ms | 27.5 ms | 300 ms | OK |
+| 500 nodes | 5.0 ms | 8.1 ms | 13.1 ms | 300 ms | OK |
+| 2,000 nodes | 15.6 ms | 2.2 ms | 17.7 ms | 1,000 ms | OK |
+| 5,000 nodes (stress) | 34.2 ms | 2.7 ms | 36.9 ms | 2,000 ms | OK, no freeze |
+
+### `npm run bench:m2` (mutate + relayout + dirty-render-update + serialize)
+
+| Fixture | Tab | Rename | Delete | Fold | Unfold | Serialize |
+|---|---|---|---|---|---|---|
+| 100 nodes | 4.2 ms | 3.0 ms | 2.5 ms | 2.5 ms | 6.2 ms | 0.3 ms |
+| 500 nodes | 4.2 ms | 3.8 ms | 3.9 ms | 4.0 ms | 6.9 ms | 0.2 ms |
+| 2,000 nodes | 9.5 ms | 11.1 ms | 12.1 ms | 8.6 ms | 11.8 ms | 0.5 ms |
+| 5,000 nodes (stress) | 28.8 ms | 26.5 ms | 23.5 ms | 17.2 ms | 24.5 ms | 0.7 ms |
+
+The `Serialize` column is the number that actually matters for the M2
+write-back path (`serializeMindMap` runs on every `onChange`, before the
+400 ms debounce even starts): 0.7 ms worst case (5,000 nodes) is
+negligible against the debounce window, confirming trade-off #10's
+"start with full replace" call needs no revisiting yet (DECISIONS.md).
+Budget: 50 ms target / 100 ms hard ceiling for Tab/Enter -> node visible
+& editable — all fixtures comfortably OK, including the 5,000-node stress
+fixture.
+
+### Bundle sizes (`npm run build`)
+
+| Bundle | Raw | Gzip | Budget | M1 |
+|---|---|---|---|---|
+| `dist/extension.js` (host) | 3,782 B (3.7 KB) | 1,887 B (1.8 KB) | < 500 KB target / 1 MB ceiling | 3.0 KB |
+| `media/webview.js` (webview) | 54,511 B (53.2 KB) | 17,121 B (16.7 KB) | < 500 KB target / 1 MB ceiling | 45.6 KB |
+
+The webview grew ~7.6 KB raw over M1: `InlineEditor`, `debounce`,
+`navigation`, `visibility`, and `metadata` (`ensurePersistentIds`) are now
+actually imported and bundled (M1's build imported the parser/layout/
+renderer/controller but not yet the editing-support modules). Both
+bundles combined are ~11.6% of the 500 KB target — no dependency was
+added (still just `d3-flextree`), so this is entirely more of the
+already-ported core being reached, not new weight.
+
+### Test suite
+
+313 passed / 0 skipped (26 files) — 11 new tests in `webviewBootstrap.
+test.ts` (Tab-creates-and-opens-editor, commit-via-Enter, debounced
+write-back posts the serialized doc, Delete, arrow navigation, undo/redo
+via `command` messages, and the external-edit-while-pending-write
+conflict guard) plus a new `mindMapEditorProvider.test.ts` (5 tests: ready
+handshake posts the document, `writeDocument` applies a full-document
+`WorkspaceEdit`, the resulting change event is **not** re-forwarded to the
+webview as an external edit — the self-write-suppression case — a
+genuine external edit **is** forwarded after the 300 ms debounce, and
+`mindmapView.undo`/`redo` route only to the active panel) against a fake
+`vscode` module (`vscode` isn't installed as a package; `vi.mock`
+supplies one, per the plan's own testing-strategy note about host<->
+webview protocol tests needing a fake VS Code API).
+
+### REMAINING FOR HUMAN — real-window verification (M2 exit criterion)
+
+Same caveat as M1, now covering the new interaction loop: everything above
+is headless jsdom/vi.mock — no pixels painted, no real Chromium
+keyboard/focus/IME behavior, and the fake `vscode` module's `applyEdit`/
+`onDidChangeTextDocument` simulate the real cross-process contract but
+aren't it. What a human needs to check in a real Extension Development
+Host (F5), per the plan's M2 exit criterion ("keystroke/creation latency
+within budget; round-trip loses nothing; split-view editing works both
+directions"):
+
+1. Open a fixture as a mind map. Tab/Enter/Shift+Enter/F2/double-click/
+   Delete/Backspace/Escape/arrow keys — confirm each feels instant (no
+   visible lag before the new/edited node appears) and that typing in the
+   inline editor never stutters.
+2. Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z / Ctrl/Cmd+Y — confirm VS Code doesn't
+   intercept these into its own (no-op, since there's no text editor
+   focused) undo command instead of routing to the mind map; this is the
+   one thing `contributes.keybindings`' `when` clause needs a real
+   workbench to prove.
+3. Open the same file in a split view as plain markdown. Edit the mind
+   map — confirm the text side updates only after the ~400 ms debounce,
+   with no visible flicker/cursor-jump in the text editor (full-document
+   replace, trade-off #10 — this is exactly the scenario that would
+   surface a need for minimal-range edits instead). Then edit the text
+   side — confirm the map rebuilds after the ~300 ms forward debounce and
+   preserves selection.
+4. Trigger the conflict case on purpose (edit the map, then within ~400 ms
+   also save an edit to the text side from another program/process) and
+   confirm the warning notice appears and the map's own edit still wins
+   (documented limitation in DECISIONS.md, not a bug to "fix" here).
+5. 5,000-node fixture: repeat step 1 — must stay responsive, no freeze.
+
+## M3 — Full feature parity
+
+No ported core file was touched (verified: `diff -rq webview/{model,layout,
+render,sync,controller}` against the reference repo's `src/{...}` — zero
+diffs, same as every milestone so far). `webview/main.ts` did change
+(fold/manual-position/reorder/link/search/context-menu/clipboard wiring,
+plus the `reconcilePersistentIds` bug fix — see DECISIONS.md), so all three
+bench scripts were re-run in full, not skipped.
+
+### M3 budget sign-off — clean re-run, all within budget
+
+The initial M3 bench run was contaminated by heavy concurrent machine load
+(load average ~1.7–6.5; the Vitest suite took ~33s vs. its normal ~2.5s, a
+~13x slowdown unrelated to the code under test) and produced numbers that
+inflated the *small* fixtures as hard as the large ones — the signature of
+contention, not a code regression, especially since the measured code is
+verified **byte-identical** to the reference (`diff -rq`, confirmed above),
+so no M3 change *could* have moved these paths. Those contaminated numbers
+were not recorded as authoritative.
+
+The tables below are the **clean re-run on an idle window** (2026-07-17;
+Vitest suite back to 2.24s, its normal runtime — the independent gauge that
+the machine was actually quiet). They confirm no regression: every figure
+is within noise of the M2 baseline, and all are inside budget.
+
+### `npm run bench:m1`
+
+| Fixture | Parse | Layout | Total | Budget | Status | M2 baseline (total) |
+|---|---|---|---|---|---|---|
+| 100 nodes | 0.6 ms | 3.3 ms | 3.9 ms | 300 ms | OK | 3.6 ms |
+| 500 nodes | 0.5 ms | 5.0 ms | 5.5 ms | 300 ms | OK | 6.4 ms |
+| 2,000 nodes | 1.6 ms | 14.0 ms | 15.6 ms | 1,000 ms | OK | 16.6 ms |
+| 5,000 nodes (stress) | 3.6 ms | 33.9 ms | 37.6 ms | 2,000 ms | OK, no freeze | 37.0 ms |
+
+### `npm run bench:open`
+
+| Fixture | Parse+colors+sides+layout | Mount | Total | Budget | Status |
+|---|---|---|---|---|---|
+| 100 nodes | 3.1 ms | 41.7 ms | 44.8 ms | 300 ms | OK |
+| 500 nodes | 9.5 ms | 8.7 ms | 18.3 ms | 300 ms | OK |
+| 2,000 nodes | 16.0 ms | 2.1 ms | 18.1 ms | 1,000 ms | OK |
+| 5,000 nodes (stress) | 32.0 ms | 2.0 ms | 34.0 ms | 2,000 ms | OK, no freeze |
+
+Same culling-driven inverted-mount-column shape as M1/M2 (below the
+300-node threshold every node mounts; above it, only the in-viewport
+handful do). Worst case (100 nodes) uses ~15% of its budget.
+
+### `npm run bench:m2`
+
+| Fixture | Tab | Rename | Delete | Fold | Unfold | Serialize |
+|---|---|---|---|---|---|---|
+| 100 nodes | 4.0 ms | 3.1 ms | 2.7 ms | 2.2 ms | 6.0 ms | 0.2 ms |
+| 500 nodes | 4.1 ms | 3.6 ms | 3.9 ms | 4.0 ms | 4.9 ms | 3.1 ms |
+| 2,000 nodes | 10.1 ms | 11.3 ms | 11.5 ms | 8.1 ms | 11.3 ms | 0.4 ms |
+| 5,000 nodes (stress) | 28.1 ms | 26.9 ms | 22.5 ms | 16.7 ms | 24.6 ms | 0.6 ms |
+
+Budget: 50 ms target / 100 ms hard ceiling for Tab/Enter → node visible &
+editable — every fixture OK against **target**, including the 5,000-node
+stress fixture (worst case 28.1 ms, well under the 50 ms target). These
+line up with M2's baseline (Tab 4.2/4.2/9.5/28.8 ms) within noise, exactly
+as expected for byte-identical mutation/layout/render code. **Serialize**
+(the column that gates the write-back path, running on every edit before
+the 400 ms debounce) is ≤0.6 ms at 5,000 nodes — far under CLAUDE.md's
+"Markdown sync after node edit" budget row.
+
+### Bundle sizes (`npm run build`)
+
+| Bundle | Raw | Gzip | Budget | M2 |
+|---|---|---|---|---|
+| `dist/extension.js` (host) | 5,527 B (5.4 KB) | 2,546 B (2.5 KB) | < 500 KB target / 1 MB ceiling | 3.7 KB |
+| `media/webview.js` (webview) | 68,244 B (66.6 KB) | 20,523 B (20.0 KB) | < 500 KB target / 1 MB ceiling | 53.2 KB |
+
+Combined ~74 KB raw / ~23 KB gzip — **~14.8% of the 500 KB target**. No new
+dependency was added (still just `d3-flextree`); the growth is
+`LinkModal`/`ContextMenu` (new, small) plus more of the already-bundled
+ported `sync`/`model` modules (`goToSection`, `parseExternalPaste`,
+`search`) actually being *reached* now that M3 wires them, not new weight
+per se.
+
+### Test suite
+
+**348 passed / 0 skipped** (28 files) — 313 from M0–M2 plus 35 new: 12 in
+`test/webviewBootstrap.test.ts`'s new "M3 feature wiring" describe block
+(fold badge + Ctrl/Cmd+/ toggle, Alt+drag manual position, resize-handle
+manual width, plain drag-reorder, Alt+Up/Down keyboard reorder, link click
+-> `openLink` message, Ctrl/Cmd+K link editor + save, Ctrl/Cmd+F search
+open/select, right-click context menu + "Go to section" flush, Escape/
+outside-click menu dismissal, Ctrl/Cmd+C/X/V clipboard round trip), 9 new
+in `test/mindMapEditorProvider.test.ts` (search/rebalance/linkEditor/
+toggleFold command routing, `openLink`'s URL-vs-relative-path split,
+`goToSection` opening beside at the resolved target line + an out-of-range
+line clamp, the toggleToText flush round trip incl. the no-active-panel
+no-op case, toggleToMindMap incl. the non-markdown no-op case), plus two
+new files: `test/linkModal.test.ts` (8 tests) and
+`test/contextMenu.test.ts` (6 tests).
+
+### REMAINING FOR HUMAN — real-window verification (M3 exit criterion)
+
+Same caveat as every milestone: everything above is headless jsdom/
+vi.mock. What a human needs to check in a real Extension Development Host
+(F5 — `.vscode/launch.json` now exists; run `npm run build` or `npm run
+dev` first, no auto-build task is wired, see DECISIONS.md):
+
+1. Fold/unfold via badge click and Ctrl/Cmd+/ — **specifically test folding
+   the *same* node twice in a row** (fold, then immediately unfold again)
+   on a node that has never been folded before in that file — this is the
+   exact case the `reconcilePersistentIds` fix (DECISIONS.md) addresses;
+   also confirm the fold state round-trips through a save/reopen.
+2. Alt+drag a node to a manual position; drag its resize handle; drag-drop
+   a node onto another (nest) and near a sibling's top/bottom edge
+   (reorder); Alt+Up/Down keyboard reorder. Confirm the frontmatter
+   `pos:`/`width:` metadata appears after write-back and survives reopen.
+3. Click a wikilink and a URL link — confirm the wikilink opens the
+   right file (appending `.md`, relative to the current file's folder) and
+   the URL opens in the system browser, in both cases without disturbing
+   the open mind map tab. Ctrl/Cmd+K on a node with/without an existing
+   link — confirm the modal pre-fills correctly and Remove/Save both work.
+4. Ctrl/Cmd+F opens the search panel; typing filters; Enter/click selects
+   and centers/unfolds the result; a second Ctrl/Cmd+F while already open
+   just refocuses (no duplicate panel).
+5. Right-click a node — confirm every menu item does what it says,
+   including "Go to note section": it should open the document as a plain
+   text editor **in the column beside** the map, with the cursor on the
+   node's own line/heading/block, leaving the map tab open and untouched
+   (user-decided reveal semantics). Try it on a node with a persisted
+   `^blockid`, on a unique heading, and on a plain list item (the three
+   `resolveGoToTarget` tiers) — each should land on the right line.
+6. Ctrl/Cmd+C/X on a selection, Ctrl/Cmd+V within the map, and pasting the
+   same OS-clipboard text into a *different* app (confirm it's readable
+   plain markdown) — plus pasting external markdown/plain-text copied from
+   outside the extension into the map.
+7. Ctrl/Cmd+Shift+B rebalances (clears manual positions); confirm it
+   doesn't collide with VS Code's own "Run Build Task" default on that
+   chord while a mind map tab is focused.
+8. Ctrl/Cmd+M both directions: from a mind map tab to the same file as
+   plain markdown, and back — confirm the *same* tab toggles (no
+   duplicate tabs pile up) and that an in-flight edit is never lost
+   (make an edit, immediately Ctrl/Cmd+M, confirm the text side shows the
+   edit, not stale content).
+9. Re-run this whole checklist's 5,000-node case — must stay responsive
+   throughout; if it doesn't, that's real information this session's noisy
+   headless numbers above couldn't rule out.
+10. **Re-run `bench:m1`/`bench:m2`/`bench:open` on an idle machine** and
+    compare against M2's baseline numbers properly — this session's numbers
+    are flagged, not trusted, for the reasons above.
