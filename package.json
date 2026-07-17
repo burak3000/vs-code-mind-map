@@ -13,6 +13,18 @@
 		"Visualization",
 		"Other"
 	],
+	"capabilities": {
+		"untrustedWorkspaces": {
+			"supported": true,
+			"restrictedConfigurations": [
+				"mindmapView.pastedImageFolder"
+			]
+		},
+		"virtualWorkspaces": {
+			"supported": "limited",
+			"description": "Opening and bidirectionally editing a markdown file as a mind map works over any workspace filesystem. Clicking a link/image, displaying an image thumbnail, and pasting a clipboard image resolve paths relative to the document's own folder using Node's path module against document.uri.fsPath, which assumes a real (file://-shaped) path — these three features may resolve incorrectly or fail on a non-file:// virtual filesystem (e.g. github.dev, vscode-vfs://)."
+		}
+	},
 	"main": "./dist/extension.js",
 	"activationEvents": [],
 	"contributes": {
@@ -176,7 +188,8 @@
 		"bench:m2": "node scripts/bench-m2.mjs",
 		"bench:images": "node scripts/bench-images.mjs",
 		"test": "vitest run",
-		"test:watch": "vitest"
+		"test:watch": "vitest",
+		"package": "npm run build && npx @vscode/vsce package --no-rewrite-relative-links"
 	},
 	"devDependencies": {
 		"@types/node": "^20.11.0",

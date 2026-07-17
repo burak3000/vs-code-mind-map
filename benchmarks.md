@@ -554,3 +554,195 @@ Headless as always. In a real Extension Development Host (F5):
    into the map — confirm a `pasted-image-<timestamp>.png` file appears
    beside the document (or in `pastedImageFolder` if set), a new node shows
    its thumbnail, and the file round-trips on reopen.
+
+## M5 — Hardening & release readiness
+
+**Core-integrity check — one known intentional exception this milestone.**
+`model/`, `layout/`, `sync/`, `controller/` remain fully byte-identical to
+the reference (`diff -rq` — zero diffs, same as every prior milestone).
+`render/` now differs by **exactly** the user-authorized additive
+`SvgRenderer.getViewport`/`setViewport` pair — `diff -u`/`git diff` shows a
+single hunk of **additions only, no `-` lines**, so no existing renderer
+behavior changed (see DECISIONS.md's dated maintenance note). The
+verification going forward is "render/ differs *only* by that pair," not
+"clean." `webview/main.ts` also changed (state persistence —
+`persistState`/`restoreViewState`/`onViewportGesture`/`pathOf`/`nodeAtPath`);
+`src/MindMapEditorProvider.ts` did **not** change (the capability
+declarations are manifest-only, in `package.json`). All four bench scripts
+re-run to confirm no regression — the new `SvgRenderer` methods are O(1)
+field copies called only at persist/restore, never on a bench path.
+
+Machine check before running: `uptime` showed load averages ~2.7–6.8 across
+the session (spiking to ~6.8 during the final bench re-run after the
+`SvgRenderer` change); the Vitest suite ran in ~2.6–3.0s vs. the documented
+"normal ~2.5s" baseline — a mild slowdown, nowhere near the ~13x
+contamination signature M3's first (discarded) run showed. Numbers are all
+comfortably within budget and within noise of the M4 baseline, so treated as
+authoritative; flagging the elevated load per the "check machine load first"
+instruction — read the individual figures as "within budget, not a
+regression" rather than as precise timings.
+
+### `npm run bench:m1`
+
+| Fixture | Parse | Layout | Total | Budget | Status | M4 baseline (total) |
+|---|---|---|---|---|---|---|
+| 100 nodes | 0.6 ms | 2.9 ms | 3.5 ms | 300 ms | OK | 3.6 ms (M2/M3 baseline; M4 didn't re-run bench:m1) |
+| 500 nodes | 0.5 ms | 5.1 ms | 5.6 ms | 300 ms | OK | 6.4 ms |
+| 2,000 nodes | 1.5 ms | 13.9 ms | 15.3 ms | 1,000 ms | OK | 16.6 ms |
+| 5,000 nodes (stress) | 3.2 ms | 30.0 ms | 33.1 ms | 2,000 ms | OK, no freeze | 37.0 ms |
+
+### `npm run bench:open`
+
+| Fixture | Parse+colors+sides+layout | Mount | Total | Budget | Status |
+|---|---|---|---|---|---|
+| 100 nodes | 2.9 ms | 21.6 ms | 24.5 ms | 300 ms | OK |
+| 500 nodes | 4.6 ms | 8.3 ms | 12.9 ms | 300 ms | OK |
+| 2,000 nodes | 15.7 ms | 2.3 ms | 18.0 ms | 1,000 ms | OK |
+| 5,000 nodes (stress) | 31.0 ms | 1.7 ms | 32.7 ms | 2,000 ms | OK, no freeze |
+
+Matches the M1–M4 baseline within noise — expected, since
+`restoreViewState()` only runs once per `buildFromScratch` and is bounded by
+selection size (typically 0, on a fresh open with no persisted state),
+not map size.
+
+### `npm run bench:m2`
+
+| Fixture | Tab | Rename | Delete | Fold | Unfold | Serialize |
+|---|---|---|---|---|---|---|
+| 100 nodes | 3.9 ms | 2.8 ms | 2.9 ms | 2.0 ms | 5.8 ms | 0.3 ms |
+| 500 nodes | 3.6 ms | 3.4 ms | 3.4 ms | 3.7 ms | 4.2 ms | 2.3 ms |
+| 2,000 nodes | 10.4 ms | 10.1 ms | 10.6 ms | 7.6 ms | 12.0 ms | 0.3 ms |
+| 5,000 nodes (stress) | 26.6 ms | 27.1 ms | 22.2 ms | 16.4 ms | 24.0 ms | 0.6 ms |
+
+Matches the M4 baseline (Tab 4.3/3.9/10.2/29.6 ms) within noise. The new
+`persistState()` call at the end of every `onChange` (same frequency as
+`serializeMindMap`) adds no measurable cost — it's O(selection size) via
+`Array.prototype.indexOf` over each node's own sibling list, not a tree
+walk, and every fixture stays comfortably under the 50 ms target including
+at 5,000 nodes.
+
+### `npm run bench:images`
+
+```
+201 nodes (200 with an image embed): parse+layout=3.7ms mount=40.5ms
+open=49.2ms (budget 1000ms) [OK] pan-dispatch=2.8ms
+.mm-node-image elements created: 200
+```
+
+Matches the M4 baseline (open 51.4ms) within noise — no regression.
+
+### Bundle sizes (`npm run build`)
+
+| Bundle | Raw | Gzip | Budget | M4 |
+|---|---|---|---|---|
+| `dist/extension.js` (host) | 7,738 B (7.6 KB) | 3,341 B (3.3 KB) | < 500 KB target / 1 MB ceiling | 7.6 KB (unchanged — `src/` untouched this milestone) |
+| `media/webview.js` (webview) | 72,225 B (70.5 KB) | — | < 500 KB target / 1 MB ceiling | 68.9 KB |
+
+Combined ~80 KB raw — **~16% of the 500 KB target**. The webview grew
+~3.3 KB raw over M4 (`persistState`/`restoreViewState`/`onViewportGesture`/
+`pathOf`/`nodeAtPath` in `webview/main.ts`, plus the additive
+`getViewport`/`setViewport` in `SvgRenderer`). No new dependency (still just
+`d3-flextree`).
+
+### Packaged `.vsix` size (new in M5 — `npm run package`)
+
+```
+mindmap-view-0.0.1.vsix (9 files, 39.77 KB on vsce's own accounting;
+40,728 bytes / ~39.8 KB on disk)
+├─ LICENSE.txt            1.04 KB
+├─ changelog.md           4.32 KB
+├─ package.json           6.37 KB
+├─ readme.md              9.07 KB
+├─ dist/extension.js      7.56 KB
+└─ media/
+   ├─ mindmap.css        14.92 KB
+   └─ webview.js         70.53 KB
+```
+
+**~8% of the 500 KB target, ~4% of the 1 MB hard ceiling.** Packaged
+successfully with the placeholder `"TODO-set-publisher-id"` publisher
+(`vsce package`, unlike `publish`, doesn't validate it) and no
+`repository` field (`--no-rewrite-relative-links` works around the hard
+failure that field's absence otherwise causes — see DECISIONS.md). Not
+committed (`*.vsix` is already `.gitignore`d).
+
+### Test suite
+
+**374 passed / 0 skipped** (31 files) — M5 added
+`test/webviewStatePersistence.test.ts` (6 tests): no `setState` call with
+nothing selected; primary+multi-selection persisted as structural
+sibling-index paths on every selection change; selection restored across a
+simulated reload (fresh module + a shared fake state store, mirroring what
+VS Code's own store actually preserves across a real one); **an exact
+pan/zoom with nothing selected round-tripped** (ctrl+wheel zoom → persist →
+reload → byte-identical transform string, via the new
+`getViewport`/`setViewport`); selection AND a changed viewport restored
+together; a persisted path that no longer resolves (tree shrank) ignored
+without throwing.
+
+### REMAINING FOR HUMAN — the consolidated real-window checklist (M5 = the release gate)
+
+Everything measured in this file, across every milestone, is headless
+(plain Node / jsdom / `vi.mock`) — no pixels painted, no real Chromium
+paint/layout/GC, no real cross-process `postMessage`, no real Extension
+Development Host keybinding interception. This is the single consolidated
+list a human needs to walk before a release; it supersedes having to dig
+through each milestone's own scattered "remaining for human" section
+above (kept there for the historical record, not repeated here item-for-
+item where this list already covers the same ground):
+
+1. **Open latency / responsiveness, all four fixture sizes** (100/500/
+   2,000/5,000 nodes, `fixtures/*.md`, generated by `npm run fixtures`,
+   opened via Reopen Editor With… → Mind Map): confirm each is within its
+   budget row in this file's own tables, and — the one thing no headless
+   bench can prove — that **5,000 nodes stays responsive** (pan/zoom, click,
+   scroll) rather than merely "not frozen at open." Watch DevTools'
+   Performance panel (Developer: Open Webview Developer Tools) for actual
+   frame rate during a pan/zoom gesture; target 60 fps, hard floor 30 fps.
+2. **Every M2/M3/M4 interaction**, per their own sections above: inline
+   editing feel: Tab/Enter/Shift+Enter/F2/double-click/Delete/Backspace/
+   Escape/arrows; undo/redo chords actually reach the mind map (not VS
+   Code's own no-op); split-view text-editor sync both directions,
+   including the external-edit-during-pending-write warning notice;
+   folding (specifically fold-then-immediately-unfold-the-same-node-twice,
+   the `reconcilePersistentIds` regression case); manual position/resize/
+   drag-reorder persisting through a save+reopen; links (wikilink + URL)
+   and Ctrl/Cmd+K; search; the context menu including "Go to note section"
+   opening beside the map at the right line; multi-select clipboard
+   (internal + external paste); Ctrl/Cmd+Shift+B rebalance; Ctrl/Cmd+M
+   toggle both directions, same tab, no lost in-flight edit; theming on
+   light/dark/both High-Contrast variants; image thumbnails (local +
+   remote + broken-path glyph); every setting taking effect per its
+   live-vs-next-open classification; clipboard image paste round-tripping
+   through save+reopen.
+3. **M5's own new ground — webview lifecycle:** pan/zoom to a distinctive
+   view and select a node, then switch away from the mind-map tab (another
+   tab, editor group, or VS Code window) long enough for it to be hidden,
+   and switch back. Confirm: (a) the selection you had comes back (visually
+   highlighted); (b) the **exact pan/zoom** comes back — not re-centered,
+   not reset to default — *including* the case where you pan/zoom with
+   nothing selected (this is what the user-authorized
+   `SvgRenderer.getViewport`/`setViewport` pair is for); (c) judge whether
+   the brief rebuild-flash (full re-parse + fresh mount, same cost as a
+   fresh open — see this file's open-latency numbers above) is noticeable/
+   objectionable. `retainContextWhenHidden` is **decided** (`false`,
+   DECISIONS.md) — but if that flash feels bad in a real window, it's the
+   one signal that would reopen that decision; there's no way to judge it
+   from a headless run.
+4. **The packaged `.vsix` itself** (`RELEASING.md` step 5): install
+   `mindmap-view-0.0.1.vsix` into a scratch VS Code profile
+   (`code --install-extension mindmap-view-0.0.1.vsix`) and repeat a quick
+   pass of the above — confirms the *shipped* artifact (not just the dev
+   checkout with `npm run dev` watching) actually works, since packaging
+   and dev-mode load the bundle differently.
+5. **Workspace trust / virtual workspace**, new capability declarations
+   (`package.json`): open a workspace in Restricted Mode and confirm the
+   mind map still opens/edits normally, and that setting
+   `mindmapView.pastedImageFolder` from that workspace's own
+   `.vscode/settings.json` is genuinely ignored (falls back to the
+   user-level value or the same-directory default) — the specific gap the
+   `restrictedConfigurations` declaration is supposed to close. A virtual
+   workspace (e.g. a GitHub repository browsed via `github.dev`) is a
+   secondary check — confirmed *not* fully supported by design (`"limited"`
+   — see DECISIONS.md), so the useful check there is that the core
+   open/edit story still works, not that every feature does.

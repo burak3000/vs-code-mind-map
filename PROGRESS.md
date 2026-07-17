@@ -8,7 +8,7 @@ Implementation is done by a Sonnet 5 agent, milestone by milestone, with a
 review gate after each milestone; performance trade-offs are decided by the
 user, never by the agent (rule 3).
 
-_Last updated: 2026-07-17 (M4 completed — images, `--vscode-*` theming, settings, and clipboard image paste; benchmarks clean on an idle window, all within budget)._
+_Last updated: 2026-07-18 (M5 completed — webview state persistence with exact pan/zoom restore, workspace-trust/virtual-workspace declarations, `.vscodeignore`/`vsce package`, README/CHANGELOG/LICENSE/RELEASING.md; both escalations decided by the user — `retainContextWhenHidden` stays `false`, and the authorized additive `SvgRenderer.getViewport`/`setViewport` pair is the one intentional core divergence; benchmarks clean, all within budget; `model/layout/sync/controller` still byte-identical, `render/` differs only by the authorized additive pair)._
 
 ## Milestone status
 
@@ -19,7 +19,7 @@ _Last updated: 2026-07-17 (M4 completed — images, `--vscode-*` theming, settin
 | M2 | Editing + bidirectional sync + keybinding plumbing | **Done** |
 | M3 | Full feature parity (folding, links, manual positioning, search, context menu, multi-select/clipboard, Ctrl/Cmd+M toggle) | **Done** (both escalations resolved; benchmarks re-run clean on an idle window, all within budget) |
 | M4 | Images (display **+ clipboard image paste, moved from M3**), VS Code theming (`--vscode-*` vars), settings (`contributes.configuration`) | **Done** (one escalation — pasted-image save location — resolved by the user; benchmarks clean on an idle window, all within budget) |
-| M5 | Hardening (5k stress, webview lifecycle, workspace trust), packaging (`vsce`), release readiness | Pending — the only milestone left |
+| M5 | Hardening (5k stress, webview lifecycle, workspace trust), packaging (`vsce`), release readiness | **Done** — both escalations decided by the user (`retainContextWhenHidden` `false`; authorized additive `SvgRenderer` viewport pair); real-window F5 pass remains the human gate (consolidated in `benchmarks.md`) |
 
 ## M0 — done
 
@@ -263,6 +263,104 @@ the clean-window benchmark run.
   Bundle ~15.6% of the 500KB budget, no new dependency. See benchmarks.md.
 - **Not committed** — left for the user.
 
+## M5 — done, one escalation
+
+Delivered, in `webview/main.ts`, `package.json`, and new top-level files
+(`README.md`, `CHANGELOG.md`, `LICENSE`, `RELEASING.md`, `.vscodeignore`):
+
+- **Webview state persistence (plan §11):** `persistState()`/
+  `restoreViewState()` in `webview/main.ts` use `vscode.setState`/
+  `getState` to survive a hidden→revealed reload. Selection is persisted as
+  a structural sibling-index path (`pathOf`/`nodeAtPath`, the same walk
+  `sync/reconcile.ts`'s `findEquivalentNode` already uses for external-edit
+  reconciliation) rather than by node id, since a reload re-parses the
+  document and mints a fresh random id for any node without persisted
+  `^blockid` metadata. The **exact pan/zoom** is persisted and restored via
+  a new additive `SvgRenderer.getViewport`/`setViewport` pair (user-
+  authorized — see below), independently of selection, so a free pan/zoom
+  with nothing selected round-trips too; a new `onViewportGesture()` wired
+  to container `pointerup`/`wheel` captures pan/zoom that never emits a
+  controller `onChange`. A brand-new open (nothing ever persisted) is
+  unaffected.
+- **Full pan/zoom fidelity → `SvgRenderer` additive change (USER-AUTHORIZED,
+  the one intentional core divergence):** the coordinator/user chose exact
+  viewport restore over the byte-identical-port invariant for this one file.
+  Two public methods (`getViewport(): Viewport` returning a copy of the
+  private `view`; `setViewport(v)` writing the three fields and calling the
+  renderer's **own existing** `scheduleApplyViewport`) were added to
+  `webview/render/SvgRenderer.ts` — **additive-only, zero deletions**
+  (`git diff` = one hunk, no `-` lines; no existing method's behavior
+  changes). See the core-integrity note below and DECISIONS.md's dated
+  entry (with the exact added code and a maintenance note for future
+  reference-repo re-syncs).
+- **`retainContextWhenHidden` → stays `false` (user-decided):** no code
+  change; the state-persistence work above makes the `false` path
+  selection-and-viewport-correct on reveal, turning this into a pure
+  bounded-one-time-latency vs. continuous-memory choice, which `false`
+  wins. See DECISIONS.md.
+- **Workspace trust / virtual workspaces (N4):** `package.json`'s new
+  `capabilities` block — `untrustedWorkspaces.supported: true` (nothing
+  here executes workspace-sourced code; link clicks are user-initiated and
+  read-only, the same trust level VS Code's own Markdown preview already
+  operates at) with `mindmapView.pastedImageFolder` listed in
+  `restrictedConfigurations` (a malicious untrusted repo's own
+  `.vscode/settings.json` could otherwise redirect a user's own paste
+  action to write outside the expected folder via path traversal).
+  `virtualWorkspaces.supported: "limited"` — opening/editing the map is
+  scheme-agnostic and works over any workspace filesystem, but link-opening,
+  image display, and clipboard-image paste all resolve paths via Node's
+  `path` module against `document.uri.fsPath` (a real-OS-path assumption)
+  and may misbehave over a genuinely virtual filesystem. See DECISIONS.md
+  for the full reasoning and the considered (and rejected, as out of scope
+  for this milestone) alternative of rewriting those three call sites to be
+  URI-aware instead of declaring the honest gap.
+- **Packaging:** new `.vscodeignore` (ships only `dist/`, `media/`,
+  `package.json`, `README.md`, `CHANGELOG.md`, `LICENSE` — excludes
+  `src/`/`webview/` TS sources, `test/`/`scripts/`/`fixtures/`,
+  `node_modules/` — esbuild already bundles the one dependency,
+  `d3-flextree` — tsconfigs, the lockfile, and every internal design doc
+  including `CLAUDE.md`), a new `npm run package` script (`vsce package
+  --no-rewrite-relative-links` — the flag works around a `vsce` hard
+  failure that occurs with no `repository` field/git remote configured yet,
+  see DECISIONS.md). **Packaged successfully** despite the still-placeholder
+  publisher id (`vsce package`, unlike `publish`, doesn't validate it) —
+  `mindmap-view-0.0.1.vsix` is **~39.7 KB, ~8% of the 500 KB target**.
+- **README.md/CHANGELOG.md/LICENSE/RELEASING.md** — new. README covers
+  R1–R20 + the clipboard-image-paste feature, the full keyboard shortcut
+  table, all six settings, how the sync works, dev/F5 instructions, and
+  known limitations (no vault-wide link index, virtual-workspace caveats,
+  full-document write-back). CHANGELOG covers M0–M5. RELEASING.md is the
+  marketplace submission checklist (publisher id, PAT, `repository`, icon,
+  `vsce publish`) — steps for the user to run, none executed here (no `git`
+  commit/push/tag or `vsce publish` was run, per the hard rules).
+- **Tests: 374 passed / 0 skipped** (31 files) — new
+  `test/webviewStatePersistence.test.ts` (6 tests: no persist with nothing
+  selected; persist primary+multi-selection as structural paths; restore
+  selection across a simulated reload; **round-trip an exact pan/zoom with
+  nothing selected** via getViewport/setViewport; restore selection AND a
+  changed viewport together; gracefully ignore a path that no longer
+  resolves).
+- **Benchmarks:** `bench:m1`/`bench:m2`/`bench:open`/`bench:images` all
+  re-run, matching the M4 baseline within noise (no regression — the
+  additions are O(selection size)/O(1), not O(map size), and the new
+  `SvgRenderer` methods aren't on any bench path). Bundle: `dist/
+  extension.js` unchanged (7.7 KB, `src/` untouched this milestone);
+  `media/webview.js` 72.2 KB (+3.3 KB over M4 for `persistState`/
+  `restoreViewState`/`onViewportGesture`/`pathOf`/`nodeAtPath` + the
+  `SvgRenderer` pair) — combined still ~16% of the 500 KB budget.
+- **Core-integrity check — now ONE known intentional exception (render/):**
+  `model/`, `layout/`, `sync/`, `controller/` remain fully byte-identical
+  to the reference (`diff -rq`, zero diffs — reconfirmed). `render/` now
+  differs by exactly `SvgRenderer.ts`'s additive `getViewport`/`setViewport`
+  pair (`diff -u`/`git diff` = additions only, no `-` lines) — the
+  user-authorized divergence. The verification going forward is "render/
+  differs *only* by that pair," not "clean" (documented in DECISIONS.md's
+  dated maintenance note). See `benchmarks.md`'s M5 section for full tables
+  and the consolidated real-window F5 checklist (the single human gate).
+- **Both M5 escalations resolved by the user** (`retainContextWhenHidden`
+  → `false`; full pan/zoom fidelity → additive `SvgRenderer` change,
+  implemented). Everything in M5's scope is done; nothing is pending.
+
 ## Decisions taken so far
 
 | Decision | Outcome | Where |
@@ -284,18 +382,29 @@ the clean-window benchmark run.
 | M4 settings live-vs-next-open split | Two debounces live; layoutMode/headingDepth/animationNodeThreshold next-open (deliberate per-setting, carried over from reference) | M4; DECISIONS.md |
 | `localResourceRoots` widened for images | Extended beyond `media/` to workspace folders + the document's dir so `asWebviewUri` can serve workspace images (security implication noted) | M4; DECISIONS.md |
 | Pasted-image save location | **User decided:** `mindmapView.pastedImageFolder` setting, default `""` = alongside the document; `![](relative/path)` embed | M4; DECISIONS.md |
+| Webview state persistence design | Selection persisted by structural sibling-index path (not id — ids churn on reparse); viewport persisted exactly via the new `SvgRenderer.getViewport`/`setViewport` (see next row) | M5; DECISIONS.md |
+| Full pan/zoom fidelity (adding `getViewport`/`setViewport` to `SvgRenderer`) | **User decided: ADD IT** (chose exact viewport restore over the byte-identical-core invariant). Purely additive two-method pair; `render/SvgRenderer.ts` now intentionally diverges from the reference — the core-integrity check has one known exception (see below) | M5; DECISIONS.md |
+| `retainContextWhenHidden` (trade-off #11) — final call | **User decided: stays `false`** (agent recommendation, confirmed). State persistence makes reveal selection+viewport-correct, so this is a pure bounded-one-time-latency vs. continuous-memory choice; `false` wins | M5; DECISIONS.md |
+| Workspace trust declaration | Agent decided (not a perf trade-off, a documentation/manifest one): `untrustedWorkspaces: true` with `pastedImageFolder` restricted; `virtualWorkspaces: "limited"` (link-open/image-display/image-paste assume a real fs path) | M5; DECISIONS.md |
+| Packaging / `.vscodeignore` scope | Agent decided: ship only `dist/`/`media/`/`package.json`/README/CHANGELOG/LICENSE; `--no-rewrite-relative-links` works around a `vsce` hard failure caused by the still-missing `repository` field | M5; DECISIONS.md |
 
 ## Open decisions expected ahead
 
+- (Both M5 escalations are now **resolved by the user** — `retainContext
+  WhenHidden` stays `false`; full pan/zoom fidelity was authorized and
+  implemented as an additive `SvgRenderer.getViewport`/`setViewport` pair.
+  See the "Decisions taken so far" table and DECISIONS.md.)
 - Write-back edit granularity (full replace vs minimal ranges, trade-off
   #10) — measured in M2, not budget-relevant; only revisit if a real
   split-view window (M5 human check) shows the text editor's
   viewport/decorations misbehaving on every map edit.
-- `retainContextWhenHidden` final call (M5).
 - Any SVG-limit / animation-threshold questions if the 5k stress test in a
-  real window (M5) surfaces them.
-- (All M3 and M4 escalations are resolved — see the sections above. No open
-  decisions remain before M5.)
+  real window (M5 human check) surfaces them.
+- Whether to later rewrite `openLink`/`resolveImage`/`writeImage`'s path
+  resolution to be URI-aware (closing the virtual-workspace gap fully) —
+  flagged as a scoped follow-up in DECISIONS.md, not undertaken in M5
+  (no real virtual-workspace usage signal for this extension yet).
+- (All M3, M4, and — bar the one item above — M5 questions are resolved.)
 
 ## Remaining for human (accumulating)
 
@@ -314,6 +423,36 @@ directions; M4: theming on light/dark/both-HC, image thumbnails, each
 setting taking effect, clipboard image paste). As of M4 the map is themed
 against `--vscode-*` variables — it should now look like a native VS Code
 editor, not unstyled DOM. The headless + idle-window benchmark sign-off is
-complete for every milestone through M4 (all within budget — see
+complete for every milestone through M5 (all within budget — see
 `benchmarks.md`); the F5 real-window pass remains the one paint/frame-rate
-check no headless run can substitute for, and is the substance of M5.
+check no headless run can substitute for.
+
+**M5 adds to that same real-window checklist** (all consolidated in
+`benchmarks.md`'s M5 section now, as the single human gate before any
+release): the 5,000-node stress test's *actual* frame rate/responsiveness
+(headless benches can only prove the compute doesn't freeze, not that
+Chromium paints it smoothly); hide a mind-map tab and reveal it again —
+confirm the selection and the **exact pan/zoom** come back (including a
+free pan/zoom with nothing selected), and gauge whether the brief
+rebuild-flash feels acceptable (`retainContextWhenHidden` is decided
+`false`, but a bad-feeling flash is the one signal that would reopen it);
+open the packaged `.vsix` in a scratch profile end-to-end (`RELEASING.md`
+step 5) rather than trusting `npm test`/`vsce package`'s own output alone.
+
+**Also human-only, not fake-able from here:**
+- **Publisher id** (`package.json`'s `"publisher"` is still
+  `"TODO-set-publisher-id"`) — required before a real `vsce publish`; `vsce
+  package` (confirmed by testing) succeeds with the placeholder, so this
+  didn't block producing a local `.vsix`, but publishing needs a real one.
+- **`repository` field** — none configured (no git remote either); `vsce
+  package` needed `--no-rewrite-relative-links` to work around a hard
+  failure caused by its absence (see DECISIONS.md). Cosmetic for now (no
+  relative links in `README.md` to rewrite), but worth adding once the repo
+  has a public home.
+- **Icon** — none exists; `RELEASING.md` lists the size/format and the
+  `package.json` field to add it under.
+- **LICENSE copyright line** — generated with this repo's git identity
+  (`burak.ucbinli`); confirm or adjust before publishing.
+- **Actually running `vsce publish`** — never executed here, per the hard
+  rule that publishing is the user's own credentialed action; `RELEASING.md`
+  is the full step-by-step for when they're ready.

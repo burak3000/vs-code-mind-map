@@ -1,0 +1,41 @@
+.vscode/**
+.vscode-test/**
+.github/**
+
+# esbuild bundles every dependency (currently just d3-flextree) directly
+# into dist/extension.js and media/webview.js — nothing here is require()'d
+# at runtime, so shipping it would only add dead weight to the .vsix.
+node_modules/**
+
+# Sources compiled by esbuild into dist/extension.js and media/webview.js —
+# not needed at runtime, only the bundled output is loaded (see esbuild.config.mjs).
+src/**
+webview/**
+
+# Tests, fixtures, and dev tooling — not part of the shipped extension.
+test/**
+scripts/**
+fixtures/**
+*.test.ts
+
+# Type-check-only configs and lockfile — irrelevant once esbuild has run.
+tsconfig.json
+tsconfig.webview.json
+package-lock.json
+esbuild.config.mjs
+
+# Design/process docs and agent-facing project instructions kept in the repo
+# but not useful (CLAUDE.md: not appropriate) inside the packaged extension —
+# README.md/CHANGELOG.md/LICENSE ship, nothing else here does.
+CLAUDE.md
+vscode-mindmap-extension-plan.md
+DECISIONS.md
+PROGRESS.md
+benchmarks.md
+RELEASING.md
+
+.gitignore
+.vscodeignore
+.DS_Store
+**/.DS_Store
+*.map

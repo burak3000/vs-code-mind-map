@@ -820,6 +820,32 @@ export class SvgRenderer {
 		this.scheduleApplyViewport();
 	}
 
+	/**
+	 * Additive pair (getViewport/setViewport) — the ONE intentional
+	 * divergence of this file from the byte-identical reference port,
+	 * user-authorized for M5 webview state persistence so a hidden->revealed
+	 * reload can restore the exact pan/zoom (not just re-center on the
+	 * selection). See DECISIONS.md's dated 2026-07-18 entry for the full
+	 * authorization + maintenance note. Purely additive: no existing method's
+	 * behavior changes, and `setViewport` reuses the exact same
+	 * `scheduleApplyViewport` apply path every other pan/zoom mutation
+	 * already uses (rAF-batched transform write + recull) rather than
+	 * hand-rolling a second transform path.
+	 *
+	 * Returns a copy so a caller can't mutate the live `view` field through
+	 * the returned object.
+	 */
+	getViewport(): Viewport {
+		return { tx: this.view.tx, ty: this.view.ty, scale: this.view.scale };
+	}
+
+	setViewport(v: Viewport): void {
+		this.view.tx = v.tx;
+		this.view.ty = v.ty;
+		this.view.scale = v.scale;
+		this.scheduleApplyViewport();
+	}
+
 	destroy(): void {
 		this.svg.removeEventListener("pointerdown", this.onPointerDown);
 		this.svg.removeEventListener("pointermove", this.onPointerMove);

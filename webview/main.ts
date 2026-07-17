@@ -141,6 +141,64 @@ function escapeRegExp(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * M5 webview state persistence (plan §11, risk row "Webview reload loses map
+ * state"): what gets handed to `vscode.setState`/read back from
+ * `vscode.getState` across a hidden→revealed reload (`retainContextWhenHidden:
+ * false` means the webview's whole JS context — including every in-memory
+ * `MindNode`/`Controller`/id — is torn down and rebuilt from scratch; only
+ * whatever was JSON-serialized into `setState` survives).
+ *
+ * Selection is **not** persisted by id: a plain node with no persisted
+ * `^blockid` metadata (see `sync/metadata.ts`'s `ensurePersistentIds`) gets a
+ * fresh random id (`model/id.ts`'s `createId()`) on every reparse, so an id
+ * saved before the reload almost never matches anything after it. Instead
+ * this persists the same **structural sibling-index path** the ported
+ * `sync/reconcile.ts`'s `findEquivalentNode` already uses to carry selection
+ * across an external-edit reparse (`onVaultModify`'s M1/M2 mechanism) —
+ * `pathOf`/`nodeAtPath` below are that same walk-up/walk-down, just replayed
+ * against plain persisted data instead of a live `MindNode` object (nothing
+ * from before the reload survives to hand `findEquivalentNode` directly).
+ */
+interface PersistedViewState {
+	/** Sibling-index path from root to the primary selection, or null if nothing was selected. */
+	selectedPath: number[] | null;
+	/** Sibling-index paths for the full multi-selection (R-multi-select) — empty when there's no selection. */
+	selectedPaths: number[][];
+	/**
+	 * Exact pan/zoom at persist time (`SvgRenderer.getViewport`) — restored
+	 * verbatim via `setViewport` on reload, so a free pan/zoom with no
+	 * selection round-trips too, not just a selection re-center. Optional so
+	 * a state object written by an older build (selection only) still loads.
+	 * Structurally identical to the renderer's own (non-exported) `Viewport`
+	 * interface — declared here rather than imported to keep `SvgRenderer.ts`'s
+	 * authorized divergence limited to exactly the two new methods.
+	 */
+	viewport?: { tx: number; ty: number; scale: number };
+}
+
+/** Root -> `node`'s sibling-index path (e.g. `[1, 0]` = root's 2nd child's 1st child) — the persisted, id-independent counterpart of `findEquivalentNode`'s own path walk. */
+function pathOf(node: MindNode): number[] {
+	const path: number[] = [];
+	let cur: MindNode = node;
+	while (cur.parent) {
+		path.unshift(cur.parent.children.indexOf(cur));
+		cur = cur.parent;
+	}
+	return path;
+}
+
+/** Replays a `pathOf` path against a (possibly newly-parsed) root — same walk as `findEquivalentNode`, minus needing an old live node to start from. Returns null if the path no longer resolves (tree shrank). */
+function nodeAtPath(root: MindNode, path: number[]): MindNode | null {
+	let node = root;
+	for (const index of path) {
+		const next: MindNode | undefined = node.children[index];
+		if (!next) return null;
+		node = next;
+	}
+	return node;
+}
+
 class MindMapApp implements ControllerListener {
 	private controller: Controller | null = null;
 	private renderer: SvgRenderer | null = null;
@@ -398,6 +456,7 @@ class MindMapApp implements ControllerListener {
 		this.renderer.setReorderHandler((id, targetId, position) => this.controller?.moveNode(id, targetId, position));
 		this.renderer.setManualWidthHandler((id, width) => this.controller?.setManualWidth(id, width));
 		this.renderer.mount(model);
+		this.restoreViewState();
 	}
 
 	/**
@@ -451,6 +510,7 @@ class MindMapApp implements ControllerListener {
 		this.controller.addListener(this);
 		this.renderer.mount(newModel);
 		this.renderer.selectNode(newSelectedId);
+		this.persistState();
 	}
 
 	// --- ControllerListener ---
@@ -473,6 +533,78 @@ class MindMapApp implements ControllerListener {
 		this.renderer.setSelection(this.controller.selectedIds, this.controller.selectedId);
 		this.data = serializeMindMap(this.controller.model, this.serializeConfig);
 		this.scheduleWrite();
+		this.persistState();
+	}
+
+	/**
+	 * Saves selection (as structural paths — see `PersistedViewState`'s doc
+	 * comment) via `vscode.setState`, called on every model/selection change
+	 * (same frequency `serializeMindMap` already runs at). Cheap: proportional
+	 * to selection size via `Array.prototype.indexOf` over each node's own
+	 * sibling list, not a tree walk — no rule-3 concern, same order of cost as
+	 * the id-reconciliation pass already done every `onChange`.
+	 *
+	 * Also saves the exact pan/zoom (`SvgRenderer.getViewport` — the additive
+	 * getter user-authorized for M5, see DECISIONS.md's dated 2026-07-18
+	 * entry) so a free pan/zoom with nothing selected round-trips across a
+	 * reload too, not just a selection re-center.
+	 */
+	private persistState(): void {
+		if (!this.controller) return;
+		const selectedNode = this.controller.selectedId ? this.controller.model.byId.get(this.controller.selectedId) : undefined;
+		const state: PersistedViewState = {
+			selectedPath: selectedNode ? pathOf(selectedNode) : null,
+			selectedPaths: Array.from(this.controller.selectedIds)
+				.map((id) => this.controller!.model.byId.get(id))
+				.filter((n): n is MindNode => !!n)
+				.map((n) => pathOf(n)),
+			viewport: this.renderer ? this.renderer.getViewport() : undefined,
+		};
+		this.vscode.setState(state);
+	}
+
+	/**
+	 * Restores whatever `persistState` last saved — called once, at the end
+	 * of `buildFromScratch` (the one place a fresh session's first model
+	 * exists). A brand-new open (nothing ever persisted, `getState()`
+	 * returns `undefined`) is a no-op, unchanged from before this existed.
+	 * On a hidden→revealed reload, resolves the saved sibling-index paths
+	 * against the freshly re-parsed model (same doc text -> same tree shape,
+	 * so the paths still resolve even though every non-persisted node just
+	 * got a brand-new random id) and restores the selection, then restores
+	 * the exact pan/zoom via `SvgRenderer.setViewport` (the additive setter
+	 * user-authorized for M5 — see DECISIONS.md's dated 2026-07-18 entry).
+	 * The viewport is restored independently of the selection: a free
+	 * pan/zoom with nothing selected round-trips too. A state object written
+	 * by an older (selection-only) build has no `viewport`, so it falls back
+	 * to re-centering on the primary selection with `centerOnWorldPoint`.
+	 */
+	private restoreViewState(): void {
+		if (!this.controller || !this.renderer) return;
+		const state = this.vscode.getState() as PersistedViewState | undefined;
+		if (!state) return;
+		const root = this.controller.model.root;
+		const resolvedIds = (state.selectedPaths ?? [])
+			.map((path) => nodeAtPath(root, path))
+			.filter((n): n is MindNode => !!n)
+			.map((n) => n.id);
+		const primary = state.selectedPath ? nodeAtPath(root, state.selectedPath) : null;
+
+		if (resolvedIds.length > 0 || primary) {
+			this.controller.selectedIds = new Set(resolvedIds);
+			this.controller.selectedId = primary?.id ?? resolvedIds[0] ?? null;
+			this.renderer.setSelection(this.controller.selectedIds, this.controller.selectedId);
+		}
+
+		if (state.viewport) {
+			this.renderer.setViewport(state.viewport);
+		} else {
+			// Older, selection-only persisted state — approximate the camera
+			// by re-centering on the primary selection, the pre-viewport
+			// behavior.
+			const anchor = primary ?? (this.controller.selectedId ? this.controller.model.byId.get(this.controller.selectedId) : undefined);
+			if (anchor?.layout) this.renderer.centerOnWorldPoint(anchor.layout.x + anchor.layout.w / 2, anchor.layout.y + anchor.layout.h / 2);
+		}
 	}
 
 	/**
@@ -926,6 +1058,22 @@ class MindMapApp implements ControllerListener {
 		}
 	}
 
+	/**
+	 * A pan/zoom gesture (background drag, wheel/pinch) changed the renderer's
+	 * viewport — persist it so a free pan/zoom with nothing selected also
+	 * round-trips across a hidden→revealed reload. Pan/zoom is handled
+	 * entirely inside the (protected) `SvgRenderer`'s own pointer/wheel
+	 * handlers and never emits a controller `onChange`, so without this hook
+	 * `persistState` would only ever capture the viewport as a side effect of
+	 * a selection/model change. `persistState` (which reads the now-current
+	 * viewport via the additive `SvgRenderer.getViewport`) is cheap — a small
+	 * object write to `vscode.setState`, no serialization — so it runs
+	 * directly per gesture-end event rather than being debounced.
+	 */
+	onViewportGesture(): void {
+		this.persistState();
+	}
+
 	private navigate(key: string): void {
 		if (!this.controller) return;
 		if (!this.controller.selectedId) {
@@ -950,6 +1098,12 @@ if (container) {
 	const app = new MindMapApp(container, vscode);
 	window.addEventListener("message", (evt: MessageEvent) => app.onHostMessage(evt.data));
 	container.addEventListener("keydown", (evt) => app.onKeyDown(evt));
+	// Persist the viewport after a pan/zoom gesture (both bubble up from the
+	// renderer's SVG to the container). The renderer updates its own `view`
+	// synchronously in its pointer/wheel handlers, so by the time these fire
+	// `getViewport()` already reflects the new pan/zoom.
+	container.addEventListener("pointerup", () => app.onViewportGesture());
+	container.addEventListener("wheel", () => app.onViewportGesture(), { passive: true });
 	container.addEventListener("mousedown", (evt) => {
 		// Don't steal focus from any of the overlay UIs — a click there is
 		// the user placing the caret / typing a query / picking a menu item,

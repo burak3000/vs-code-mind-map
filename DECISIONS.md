@@ -1013,3 +1013,337 @@ operation on an explicit paste, off the keystroke loop entirely; the
 No new dependency.
 
 **This resolves M4's one open escalation. M4 is now feature-complete.**
+
+---
+
+## 2026-07-18 — M5: webview state persistence — selection restored by structural path, not id; viewport restored only approximately (no protected-core change)
+
+**Context:** plan §11's risk row ("Webview reload loses map state") calls for
+`getState`/`setState` to persist viewport (pan/zoom) + selection across a
+hidden→revealed reload (`retainContextWhenHidden: false` means the whole JS
+context — every `MindNode`, `Controller`, id — is destroyed and rebuilt from
+scratch; only whatever was handed to `setState` survives, since that's a
+VS-Code-owned store outside the webview's own JS heap).
+
+**Decision, part 1 (why selection is persisted by structural path, not id):**
+a plain node with no persisted `^blockid` metadata (`sync/metadata.ts`'s
+`ensurePersistentIds` only mints one the first time a node needs it — first
+fold/manual-position/resize) gets a **fresh random id** every time
+`parseMindMap` runs (`model/id.ts`'s `createId()`), so an id saved before a
+reload almost never matches anything after it. Instead, `webview/main.ts`
+persists the same sibling-index path `sync/reconcile.ts`'s
+`findEquivalentNode` already walks to carry selection across an
+external-edit reparse (M1) — `pathOf`/`nodeAtPath` (new, `webview/main.ts`)
+are that identical walk-up/walk-down, just replayed against plain
+`number[]` data instead of a live `MindNode` object (nothing from before a
+reload survives to hand `findEquivalentNode` directly — there is no old
+node object left to start from). `persistState()` runs at the end of every
+`onChange()` (selection or model change) and `rebuildFromExternalText()`;
+`restoreViewState()` runs once, at the end of `buildFromScratch()` (the one
+place a session's first model exists) — a plain first-ever open
+(`getState()` returns `undefined`) is a no-op, unchanged from before this
+existed.
+
+**Decision, part 2 (viewport — SUPERSEDED, see the 2026-07-18 follow-up entry
+below):** as *originally* built, this stopped short of exact pan/zoom
+restore. The ported `SvgRenderer` had **no public getter for its current
+pan/zoom** (`private view: {tx, ty, scale}`) and **no public setter for
+scale** — only `centerOnWorldPoint`/`centerOnRoot` — so `restoreViewState()`
+re-centered (`centerOnWorldPoint`) on the restored selection: an
+approximation, with zoom always back at default and a free-panned-with-
+nothing-selected view unrecoverable. That gap, and whether to close it by
+adding methods to the protected renderer (CLAUDE.md hard rule 2), was
+**escalated to the coordinator** rather than decided here (recommendation at
+the time: don't touch the core, the gap is narrow). **The user decided the
+other way** — see the follow-up entry "M5: full pan/zoom fidelity —
+user-authorized additive change to `SvgRenderer`" below, which is the
+current, authoritative state. This paragraph is left intact as the
+append-only historical record of what was surfaced.
+
+**Alternatives considered:**
+- Persisting by node id anyway, accepting that most restores would silently
+  fail — rejected: silent failure (nothing selected after a reload with no
+  visible explanation) is worse than the structural-path approach, which
+  costs nothing extra and actually works for the common "same doc, nothing
+  structurally changed while hidden" case this feature exists for.
+- Replicating the renderer's pan/zoom math independently in `webview/
+  main.ts` via a second set of pointer/wheel listeners on the same
+  container — rejected: real risk of drift (the renderer's own `MIN_SCALE`/
+  `MAX_SCALE` clamps and drag-vs-click thresholds are private constants not
+  visible to duplicate), and rule 6 discourages parallel logic paths for
+  something this fiddly to keep in sync by hand.
+
+**Cost:** negligible — `pathOf`/`persistState` are O(depth × selection
+size) via `Array.prototype.indexOf` over each node's own sibling list, not
+a tree walk; called at the same frequency `serializeMindMap` (a full O(n)
+walk) already runs at every `onChange`. No new dependency. `bench:m1`/
+`bench:m2`/`bench:open`/`bench:images` re-run clean (see `benchmarks.md`'s
+M5 section) — no regression, as expected for a change bounded by selection
+size, not map size.
+
+**Tests:** new `test/webviewStatePersistence.test.ts` (see the follow-up
+entry below for the final, expanded test list once exact viewport
+round-trip was added).
+
+---
+
+## 2026-07-18 — M5: full pan/zoom fidelity — USER-AUTHORIZED additive change to the protected `SvgRenderer` (the one intentional divergence from the byte-identical port)
+
+**Context / authorization:** the immediately-preceding state-persistence
+entry surfaced two things to the coordinator: (1) `retainContextWhenHidden`
+(the separate entry at the bottom of this file), and (2) whether to reach
+*exact* pan/zoom restore by adding a getter/setter pair to the protected,
+byte-identically-ported `webview/render/SvgRenderer.ts`. **The user decided
+(via the coordinator) to add it** — explicitly choosing exact viewport
+restore over preserving the byte-identical-core invariant for this one
+file. This entry records that authorization and exactly what changed, so
+the divergence is auditable.
+
+**Exactly what was added (additive-only, zero deletions — verified by
+`git diff`):** two public methods on `SvgRenderer`, immediately after
+`centerOnWorldPoint`:
+
+```ts
+getViewport(): Viewport {
+    return { tx: this.view.tx, ty: this.view.ty, scale: this.view.scale };
+}
+setViewport(v: Viewport): void {
+    this.view.tx = v.tx;
+    this.view.ty = v.ty;
+    this.view.scale = v.scale;
+    this.scheduleApplyViewport();
+}
+```
+
+`getViewport` returns a **copy** of the renderer's existing private `view`
+field (so a caller can't mutate the live viewport through the returned
+object). `setViewport` writes the three fields and then calls the
+renderer's **own existing** `scheduleApplyViewport()` — the exact same
+rAF-batched transform-write + recull path every other pan/zoom mutation
+(`onWheel`, the background-drag pan, `centerOnRoot`, `centerOnWorldPoint`)
+already funnels through — rather than hand-rolling a second transform
+application. No existing method, field, constant, or behavior was changed;
+`Viewport` is the file's own already-existing (non-exported) interface. The
+`diff -u` against the reference is a single hunk of additions, no `-`
+lines.
+
+**Wiring in `webview/main.ts`:** `PersistedViewState` gained an optional
+`viewport: {tx, ty, scale}` field (optional so an older selection-only
+persisted state object still loads — it falls back to the previous
+`centerOnWorldPoint`-on-selection approximation). `persistState()` now
+records `renderer.getViewport()`; `restoreViewState()` now calls
+`renderer.setViewport(state.viewport)` when present, restoring the exact
+pan/zoom **independently of selection** — so a free pan/zoom with nothing
+selected round-trips too. Because pure pan/zoom gestures are handled inside
+the renderer's private handlers and never emit a controller `onChange`
+(the only thing that was previously driving `persistState`), a new
+`onViewportGesture()` on `MindMapApp` is wired to container-level `pointerup`
+and `wheel` listeners (both bubble up from the renderer's SVG; the renderer
+updates its `view` synchronously in its handlers, so `getViewport()` is
+already current by the time these fire) and calls `persistState()` directly
+— `setState` is a cheap small-object write, so no debounce is needed.
+
+**MAINTENANCE NOTE (important for anyone re-syncing from the reference
+repo):** `webview/render/SvgRenderer.ts` is **no longer byte-identical** to
+`/Users/burakucbinli/projects/obsidian/src/render/SvgRenderer.ts`. The
+core-integrity check that has run after every milestone (`diff -rq
+webview/{model,layout,render,sync,controller}` against the reference,
+expecting zero diffs) now has **one known, intentional exception**: `render/`
+will report `SvgRenderer.ts` differs, and the correct verification is
+"differs *only* by the additive `getViewport`/`setViewport` pair (and its
+doc comment), no `-` lines" — confirmed with `diff -u` / `git diff`, **not**
+"clean." `model/`, `layout/`, `sync/`, and `controller/` remain fully
+byte-identical and should still be checked as such. Any future port of a
+reference-repo change to `SvgRenderer` must **preserve this addition** (re-
+apply the two methods on top of the new reference version); it is not
+disposable drift.
+
+**Recommendation-vs-outcome note:** the agent's own recommendation (prior
+entry) was *not* to make this change; the user overrode that in favor of
+exact fidelity. Recorded plainly so the reasoning trail is honest — this
+was a user call on a genuine trade-off (feature fidelity vs. a maintenance
+invariant), exactly the kind rule 3's spirit says to surface rather than
+decide unilaterally, and it was surfaced and then decided by the user.
+
+**Cost:** none on any interactive path — `getViewport`/`setViewport` are
+O(1) field copies, called only at persist/restore (a reload boundary or a
+gesture end), never on the render/keystroke loop. Bundle grew ~0.4 KB raw
+(webview 72.2 KB). `bench:m1`/`bench:m2`/`bench:open`/`bench:images` re-run
+within noise (these paths don't touch the new methods) — see `benchmarks.md`'s
+M5 section.
+
+**Tests (final, `test/webviewStatePersistence.test.ts`, 6 tests):** persists
+nothing when nothing is selected; persists primary + multi-selection as
+structural paths on every selection change; restores selection across a
+simulated reload (default viewport unchanged); **round-trips an exact
+pan/zoom with nothing selected** (ctrl+wheel zoom → persist → reload →
+byte-identical transform string, exact even through the zoom math's ugly
+floats, since the same stored numbers reproduce the same representation);
+restores selection AND a changed viewport together; ignores a persisted
+path that no longer resolves without throwing.
+
+---
+
+## 2026-07-18 — M5: workspace-trust and virtual-workspace capability declarations
+
+**Context:** plan N4 ("VS Code citizenship") calls for honest
+`capabilities.untrustedWorkspaces`/`capabilities.virtualWorkspaces`
+declarations in `package.json`, based on what the extension actually does:
+parses/renders markdown (pure data, no code execution), writes back edits
+via `WorkspaceEdit` (the same class of operation any text editor already
+performs), writes clipboard-pasted images via `workspace.fs`, and opens
+links via `openExternal`/`vscode.open`.
+
+**Decision — untrusted workspaces: `supported: true`, with one restricted
+configuration.** Nothing this extension does executes code or configuration
+sourced from workspace content — no tasks, no scripts, no debug configs, no
+`eval` of file content. Parsing markdown into a visual tree and opening a
+clicked link (a user-initiated action, resolved the same way VS Code's own
+built-in Markdown preview already does, which fully supports untrusted
+workspaces) is not the class of risk workspace trust exists to gate. One
+exception: `mindmapView.pastedImageFolder` is a plain path string
+`path.resolve`'d against the document's directory with no traversal
+guard — a malicious untrusted repo's own committed `.vscode/settings.json`
+could set it to `"../../../"`-style traversal to redirect where a *user's
+own, explicitly-initiated* paste action writes a file, outside the
+folder the user would reasonably expect. Declaring it in
+`restrictedConfigurations` makes VS Code ignore that setting's
+workspace-level value in an untrusted workspace (falling back to the
+user's own User-level setting, or the same-directory default), closing
+that specific gap without weakening anything else the setting is for.
+
+**Decision — virtual workspaces: `supported: "limited"`.** Opening a
+document and editing it as a mind map works over any workspace filesystem —
+`TextDocument`/`WorkspaceEdit` are scheme-agnostic VS Code APIs with no
+real-filesystem assumption baked in anywhere in this codebase. But three
+features do carry a real-filesystem assumption: `MindMapEditorProvider.
+openLink`/`resolveImage`/`writeImage` all call `path.dirname(document.uri.
+fsPath)` (Node's `path` module, operating on `.fsPath` — a real OS path
+string) rather than a URI-aware equivalent (`vscode.Uri.joinPath`/a
+`dirname`-shaped helper). Over a non-`file://` virtual filesystem
+(`vscode-vfs://`, a `github.dev`-style provider, etc.), `.fsPath` is not
+guaranteed to be a meaningful, resolvable OS path, so these three features
+(link-opening, image display, clipboard-image paste) may resolve
+incorrectly or throw — while the core read/edit story keeps working.
+`"limited"` is the honest middle ground: not `"true"` (real, exercised
+features demonstrably assume a real filesystem), not `"false"` (the primary
+open-and-edit workflow does not, and disabling the whole extension over a
+gap in three secondary features would be a worse outcome for every virtual-
+workspace user than a documented partial degradation).
+
+**Alternatives considered:**
+- Rewriting `openLink`/`resolveImage`/`writeImage` to use a URI-aware path
+  join (e.g. a small `vscode-uri`-style `dirname`/`joinPath` helper) instead
+  of Node's `path` + `.fsPath`, to honestly reach `"true"` — considered
+  out of scope for this milestone: it touches three call sites' path
+  logic (not just a manifest declaration) for a workspace shape (virtual
+  filesystems) with no test fixture or real usage signal in this project
+  yet, and the task's own framing ("reason about whether to declare
+  `limited` and degrade, or `false`") anticipated deciding the declaration,
+  not rewriting the path-resolution architecture. Flagged here as a
+  concrete, scoped follow-up if virtual-workspace usage ever becomes real
+  for this extension, rather than silently left unmentioned.
+- `untrustedWorkspaces: "limited"` with a broader restriction (e.g. also
+  disabling link-opening entirely in restricted mode) — rejected: link
+  clicks are user-initiated and read-only (open-in-editor/open-externally,
+  not execute), the same trust level VS Code's own Markdown preview already
+  operates at; restricting it would be a strictly worse experience for no
+  corresponding security gain.
+
+**Cost:** none — this is a static manifest declaration, checked once by
+VS Code at extension load / settings-resolution time, not a runtime or
+per-frame cost.
+
+---
+
+## 2026-07-18 — M5: packaging — `.vscodeignore`, `npm run package`, and the `--no-rewrite-relative-links` `vsce` flag
+
+**Context:** plan §9 M5 calls for `vsce package` with a bundle-size check
+against the 500 KB target / 1 MB ceiling, and a lean `.vscodeignore` (ship
+only the built bundles + a handful of top-level docs, not the TypeScript
+sources/tests/design docs that produced them).
+
+**Decision:** `.vscodeignore` excludes `src/**`/`webview/**` (compiled into
+`dist/extension.js`/`media/webview.js` by esbuild — the TS sources
+themselves are never loaded at runtime), `test/**`/`scripts/**`/
+`fixtures/**`, `node_modules/**` (esbuild already bundles the one runtime
+dependency, `d3-flextree`, directly into both output bundles — nothing is
+`require()`'d at runtime, so shipping `node_modules` would be pure dead
+weight), both `tsconfig*.json` and `package-lock.json`, `esbuild.config.mjs`,
+and every internal design/process doc (`CLAUDE.md`,
+`vscode-mindmap-extension-plan.md`, `DECISIONS.md`, `PROGRESS.md`,
+`benchmarks.md`, `RELEASING.md`) — `README.md`/`CHANGELOG.md`/`LICENSE` are
+the only markdown that ships. `npm run package` = `npm run build && npx
+@vscode/vsce package --no-rewrite-relative-links` (a dev-only tool, run via
+`npx`, not an added dependency — see rule 4).
+
+**The `--no-rewrite-relative-links` flag, and why it's there:** `vsce
+package` hard-fails (exit 1, not a warning) with no `repository` field in
+`package.json` and no git remote configured (both true in this repo right
+now — no remote is configured, and the publisher/repository fields are
+placeholders the user hasn't filled in yet): it refuses to guess how to
+rewrite README.md's relative links into absolute Marketplace-hosted URLs.
+`--allow-missing-repository` (the flag that sounds like the fix) does
+**not** bypass this specific check — only `--no-rewrite-relative-links` or
+supplying `--baseContentUrl`/`--baseImagesUrl` does, confirmed by testing
+both. Since this README has no relative links to rewrite in the first
+place, the flag is a permanent no-op here regardless of whether the user
+later adds a real `repository` field — kept in the npm script rather than
+worked around by inventing a placeholder repository URL (which would be
+actively wrong metadata, not just incomplete).
+
+**Result:** `npm run package` succeeds today, placeholder publisher id and
+all (`vsce package`, unlike `vsce publish`, does not validate the publisher
+id against a real Marketplace account — only warns about the missing
+`repository` field). Packaged `mindmap-view-0.0.1.vsix`: **40,609 bytes
+(~39.7 KB)** — about **8% of the 500 KB target**, contents: `dist/
+extension.js` (7.6 KB), `media/mindmap.css` (14.9 KB), `media/webview.js`
+(70.1 KB, pre-zip), `package.json`, `README.md`, `CHANGELOG.md`,
+`LICENSE`. No `.vsix` is committed (`*.vsix` is already in `.gitignore`).
+
+**Alternatives considered:** inventing a placeholder `repository` URL to
+avoid needing the flag — rejected, that's fabricated metadata a real
+publish would ship to the Marketplace verbatim; `--allow-missing-
+repository` alone — tested, does not actually suppress the hard failure
+(only the separate "missing repository field" *warning* survives after
+adding `--no-rewrite-relative-links`, and that warning is expected/correct
+until the user supplies a real URL, see `RELEASING.md`).
+
+**Cost:** none — build-time tooling only, not shipped.
+
+---
+
+## 2026-07-18 — M5: `retainContextWhenHidden` — DECIDED: stays `false` (user)
+
+**Decision (user, via the coordinator):** `webviewOptions.
+retainContextWhenHidden` **stays `false`** — unchanged from M1, no code
+change. This was surfaced as a memory-vs-latency trade-off (rule 3) with
+both sides quantified and a recommendation to keep `false`; the user
+confirmed that recommendation.
+
+**The trade-off, as quantified for the decision:**
+- **Cost of `true` (the rejected option):** unconditional and *continuous* —
+  every hidden mind-map tab keeps its full webview DOM/JS resident (up to
+  the 150–300 MB per-map budget/ceiling for a 2k/5k-node map) for as long
+  as it stays hidden, and multiplies across however many maps a user leaves
+  open over a session.
+- **Benefit of `true`:** avoids one reveal-time rebuild — a *one-time* cost
+  on the same order as this file's `bench:open` numbers (~18 ms compute at
+  2k nodes, ~34 ms at 5k, plus unmeasured real Chromium paint), paid only
+  when a hidden tab is revealed.
+- **Why `false` wins:** the cost is bounded, one-time, and budget-compliant;
+  `true`'s memory cost is continuous and this extension's own usage pattern
+  (many notes, each possibly opened as a map, left open across a long
+  session) is exactly where forgotten hidden tabs would accumulate.
+
+**Load-bearing interaction with the state-persistence work above:** that
+work was deliberately built **before** this was raised, so the `false` path
+is now selection-*and*-viewport-correct on reveal (not merely "eventually
+re-synced from the document"). That's what turned this from a
+data-loss-vs-memory question into a pure performance/memory optimization
+choice — and with the data-loss concern gone, the continuous memory cost of
+`true` had nothing left to justify it. The one thing no headless run can
+answer — whether the brief reveal-time rebuild-flash *feels* acceptable in a
+real window — is called out in `benchmarks.md`'s consolidated F5 checklist
+as the observation that could reopen this, but absent that signal, `false`
+is the decided state.
