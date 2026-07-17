@@ -1,23 +1,58 @@
 /*
- * TODO(M4 theming): ported verbatim from the reference Obsidian plugin's
- * styles.css. It still references Obsidian CSS custom properties (e.g.
- * `var(--text-muted)`, `.theme-dark`) that don't exist in a VS Code webview.
- * Per the plan (§8, §4 port-map table: "styles.css -> media/mindmap.css:
- * swap Obsidian CSS vars for --vscode-* theme vars"), this file needs a
- * pass that maps every Obsidian variable to the matching `--vscode-*`
- * variable (and `.theme-dark`/`.theme-light` selectors to VS Code's
- * `body.vscode-dark` / `body.vscode-light` / `body.vscode-high-contrast`)
- * before the webview can render correctly against a real VS Code theme.
- * Left as-is for M0 (no webview exists yet to theme); do this in M1/M4.
+ * M4 theming (plan §8, §4 port-map table): every color reference below is a
+ * VS Code `--vscode-*` theme variable, injected automatically into every
+ * webview's document by VS Code itself (both the CSS custom properties and
+ * the `body.vscode-light` / `body.vscode-dark` / `body.vscode-high-contrast`
+ * / `body.vscode-high-contrast-light` class) — no message channel or
+ * `onDidChangeActiveColorTheme` listener needed, since VS Code updates both
+ * the variables and the body class live on a theme switch and repaints for
+ * free (the "prefer the pure-CSS path" option). Obsidian's own variables
+ * (`--text-normal`, `--background-primary`, `.theme-dark`, …) never existed
+ * in a VS Code webview to begin with, so this file previously rendered
+ * unstyled (documented in every milestone's benchmarks.md until now).
+ *
+ * Mapping (Obsidian var -> VS Code var), for anyone diffing against the
+ * reference plugin's styles.css:
+ *   --text-normal / --text-muted / --text-faint -> editor/description tokens
+ *     (canvas content uses editor.*, floating overlay widgets use
+ *     descriptionForeground/foreground — see each rule below)
+ *   --background-primary       -> --vscode-editor-background
+ *   --background-secondary     -> --vscode-editorWidget-background
+ *   --background-modifier-border -> --vscode-editorWidget-border (falls back
+ *     to --vscode-panel-border via the CSS var() fallback argument, since
+ *     not every theme sets editorWidget.border)
+ *   --background-modifier-hover -> --vscode-list-hoverBackground
+ *   --background-modifier-active-hover -> --vscode-list-activeSelectionBackground
+ *   --background-modifier-error -> --vscode-inputValidation-errorBackground
+ *   --interactive-accent (outlines) -> --vscode-focusBorder
+ *   --interactive-accent (filled buttons/badges) -> --vscode-button-background
+ *   --text-on-accent            -> --vscode-button-foreground
+ *   --text-error                -> --vscode-errorForeground
+ *   --text-accent / --link-color -> --vscode-textLink-foreground
+ *   --shadow-s                  -> composed from --vscode-widget-shadow
+ *   Obsidian's --size-4-* spacing scale has no VS Code equivalent — the
+ *   var()'s own px fallback values (already present everywhere they were
+ *   used) are now just the literal values.
+ *
+ * Branch palette (R9, DECISIONS.md 2026-07-17 "M4 theming" entry): the 8
+ * `--mm-color-cN` slots are assigned by the ported (unmodified)
+ * `render/colors.ts`, but the *hex values* those slots resolve to have
+ * always lived here in CSS, never in colors.ts — so there was no protected
+ * file to work around. Rather than hand-picking 2-3 new hex tone sets and
+ * verifying WCAG contrast against light/dark/both-high-contrast
+ * backgrounds by hand (the first attempt, reusing the reference's own
+ * light/dark tone sets, measured out at 2.48:1-4.52:1 against pure-white
+ * high-contrast-light — several slots failing WCAG AA's 4.5:1), every slot
+ * is instead mapped straight to a VS Code theme-contributed categorical
+ * color (`--vscode-charts-*`, falling back to two `--vscode-terminal-ansi*`
+ * colors for the 2 hues charts.* doesn't cover). Every shipped VS Code
+ * theme — including both high-contrast variants — is required to make its
+ * chart/terminal colors legible against its own editor background, so this
+ * sidesteps the fidelity-vs-adaptation question entirely instead of
+ * deciding it: no hardcoded hex value here can ever be "wrong" for a theme
+ * this extension has never seen.
  */
 
-/*
- * VS Code webview host adaptation (M1, not in the reference styles.css):
- * in Obsidian the workspace pane gave the container a sized parent chain;
- * a webview page starts from a plain <html>/<body>, so the 100%-height
- * container needs the chain rooted here. VS Code's own webview defaults
- * add body padding — zeroed so the map canvas owns the full viewport.
- */
 html,
 body {
 	height: 100%;
@@ -32,41 +67,29 @@ body {
 }
 
 /*
- * Per-subtopic branch palette (R9). Two tone sets so branches stay legible
- * on both light and dark themes (plan N4: theme adaptation) — light theme
- * uses mid-dark saturated hues readable on a light background; dark theme
- * uses the lighter shade of the same hue for contrast against a dark one.
+ * Per-subtopic branch palette (R9) — see the file header's DECISIONS.md
+ * pointer for why these are theme-contributed chart/terminal colors rather
+ * than hand-picked hex values.
  */
 .mindmap-view-container {
-	--mm-color-c0: #e03131;
-	--mm-color-c1: #1971c2;
-	--mm-color-c2: #2f9e44;
-	--mm-color-c3: #e8590c;
-	--mm-color-c4: #9c36b5;
-	--mm-color-c5: #0c8599;
-	--mm-color-c6: #e64980;
-	--mm-color-c7: #f08c00;
-}
-
-.theme-dark .mindmap-view-container {
-	--mm-color-c0: #ff8787;
-	--mm-color-c1: #4dabf7;
-	--mm-color-c2: #69db7c;
-	--mm-color-c3: #ffa94d;
-	--mm-color-c4: #da77f2;
-	--mm-color-c5: #3bc9db;
-	--mm-color-c6: #f783ac;
-	--mm-color-c7: #ffd43b;
+	--mm-color-c0: var(--vscode-charts-red);
+	--mm-color-c1: var(--vscode-charts-blue);
+	--mm-color-c2: var(--vscode-charts-green);
+	--mm-color-c3: var(--vscode-charts-orange);
+	--mm-color-c4: var(--vscode-charts-purple);
+	--mm-color-c5: var(--vscode-charts-yellow);
+	--mm-color-c6: var(--vscode-terminal-ansiMagenta);
+	--mm-color-c7: var(--vscode-terminal-ansiCyan);
 }
 
 .mindmap-placeholder {
-	padding: var(--size-4-4);
-	color: var(--text-muted);
+	padding: 16px;
+	color: var(--vscode-descriptionForeground);
 }
 
 .mm-svg {
 	display: block;
-	background: var(--background-primary);
+	background: var(--vscode-editor-background);
 	touch-action: none;
 	cursor: grab;
 }
@@ -76,7 +99,7 @@ body {
    into the path geometry itself, so no stroke is drawn. */
 .mm-edge {
 	stroke: none;
-	fill: var(--text-faint);
+	fill: var(--vscode-descriptionForeground);
 }
 
 /* Only the main topic (root) gets a visible box — sub-topics render as bare
@@ -91,13 +114,13 @@ body {
 }
 
 .mm-node.mm-node-root .mm-node-rect {
-	fill: var(--background-secondary);
-	stroke: var(--background-modifier-border);
+	fill: var(--vscode-editorWidget-background);
+	stroke: var(--vscode-editorWidget-border, var(--vscode-panel-border));
 	stroke-width: 1;
 }
 
 .mm-node-text {
-	fill: var(--text-normal);
+	fill: var(--vscode-editor-foreground);
 	/* font-size is set per-node as an element attribute (SvgRenderer,
 	   depth-scaled — R15: visual hierarchy by size), not here: a CSS rule
 	   here would win the cascade over that presentation attribute and
@@ -137,14 +160,14 @@ body {
 .mm-node.mm-color-c7 .mm-node-text { fill: var(--mm-color-c7); }
 
 .mm-node-link {
-	fill: var(--link-color, var(--text-accent));
+	fill: var(--vscode-textLink-foreground);
 	text-decoration: underline;
 	pointer-events: auto;
 	cursor: pointer;
 }
 
 .mm-node.mm-drop-target .mm-node-rect {
-	stroke: var(--interactive-accent);
+	stroke: var(--vscode-focusBorder);
 	stroke-width: 2;
 	stroke-dasharray: 3 2;
 }
@@ -154,7 +177,7 @@ body {
    target's width, not a highlight box — that's what distinguishes "reorder
    next to" from "nest into" (.mm-drop-target above) at a glance. */
 .mm-drop-indicator {
-	stroke: var(--interactive-accent);
+	stroke: var(--vscode-focusBorder);
 	stroke-width: 2;
 	pointer-events: none;
 }
@@ -164,7 +187,7 @@ body {
    non-root node this is the *only* time its (normally invisible) box shows
    an outline at all. */
 .mm-node.mm-selected .mm-node-rect {
-	stroke: var(--interactive-accent);
+	stroke: var(--vscode-focusBorder);
 	stroke-width: 2;
 }
 
@@ -182,7 +205,7 @@ body {
    "no box" aesthetic (above) isn't cluttered by a resize affordance on
    every node all the time. */
 .mm-resize-handle {
-	fill: var(--interactive-accent);
+	fill: var(--vscode-focusBorder);
 	opacity: 0;
 	cursor: ew-resize;
 	pointer-events: all;
@@ -197,23 +220,26 @@ body {
 	cursor: pointer;
 }
 
+/* The fold-count badge maps onto VS Code's own "badge" token pair
+   (badge.background/badge.foreground) — semantically the same UI element
+   VS Code itself uses for counters (e.g. the SCM/notification badges). */
 .mm-fold-badge circle {
-	fill: var(--background-modifier-border);
+	fill: var(--vscode-badge-background);
 }
 
 .mm-fold-badge.mm-fold-badge-folded circle {
-	fill: var(--interactive-accent);
+	fill: var(--vscode-button-background);
 }
 
 .mm-fold-badge text {
-	fill: var(--text-muted);
+	fill: var(--vscode-badge-foreground);
 	font-size: 9px;
 	pointer-events: none;
 	user-select: none;
 }
 
 .mm-fold-badge.mm-fold-badge-folded text {
-	fill: var(--text-on-accent);
+	fill: var(--vscode-button-foreground);
 }
 
 /* Image thumbnail (R-image-display, decision A: fixed-size thumb, click
@@ -227,7 +253,7 @@ body {
 }
 
 .mm-image-placeholder {
-	fill: var(--background-modifier-border);
+	fill: var(--vscode-editorWidget-border, var(--vscode-panel-border));
 }
 
 .mm-node-image-group.mm-image-loaded .mm-image-placeholder {
@@ -240,7 +266,7 @@ body {
 
 .mm-image-missing {
 	display: none;
-	fill: var(--text-error);
+	fill: var(--vscode-errorForeground);
 	font-size: 20px;
 	pointer-events: none;
 	user-select: none;
@@ -251,7 +277,7 @@ body {
 }
 
 .mm-node-image-group.mm-image-error .mm-image-placeholder {
-	fill: var(--background-modifier-error);
+	fill: var(--vscode-inputValidation-errorBackground);
 }
 
 .mm-inline-editor {
@@ -260,9 +286,9 @@ body {
 	font-size: 12px;
 	font-family: inherit;
 	text-align: center;
-	background: var(--background-primary);
-	color: var(--text-normal);
-	border: 1px solid var(--interactive-accent);
+	background: var(--vscode-editor-background);
+	color: var(--vscode-editor-foreground);
+	border: 1px solid var(--vscode-focusBorder);
 	border-radius: 4px;
 	padding: 2px 4px;
 	outline: none;
@@ -274,36 +300,36 @@ body {
 
 .mm-search-panel {
 	position: absolute;
-	top: var(--size-4-2, 8px);
-	right: var(--size-4-2, 8px);
+	top: 8px;
+	right: 8px;
 	z-index: 60;
 	width: 280px;
 	max-height: 70%;
 	display: flex;
 	flex-direction: column;
-	background: var(--background-primary);
-	border: 1px solid var(--background-modifier-border);
+	background: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
 	border-radius: 6px;
-	box-shadow: var(--shadow-s, 0 2px 8px rgba(0, 0, 0, 0.2));
+	box-shadow: 0 2px 8px var(--vscode-widget-shadow);
 	overflow: hidden;
 }
 
 .mm-search-input {
 	box-sizing: border-box;
 	width: 100%;
-	padding: var(--size-4-2, 8px);
+	padding: 8px;
 	border: none;
-	border-bottom: 1px solid var(--background-modifier-border);
-	background: transparent;
-	color: var(--text-normal);
+	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
 	font-size: 13px;
 	outline: none;
 }
 
 .mm-search-count {
-	padding: 2px var(--size-4-2, 8px);
+	padding: 2px 8px;
 	font-size: 11px;
-	color: var(--text-muted);
+	color: var(--vscode-descriptionForeground);
 }
 
 .mm-search-count:empty {
@@ -315,9 +341,9 @@ body {
 }
 
 .mm-search-result {
-	padding: var(--size-4-1, 4px) var(--size-4-2, 8px);
+	padding: 4px 8px;
 	font-size: 12px;
-	color: var(--text-normal);
+	color: var(--vscode-foreground);
 	cursor: pointer;
 	white-space: nowrap;
 	overflow: hidden;
@@ -325,11 +351,11 @@ body {
 }
 
 .mm-search-result:hover {
-	background: var(--background-modifier-hover);
+	background: var(--vscode-list-hoverBackground);
 }
 
 .mm-search-result-active {
-	background: var(--background-modifier-active-hover, var(--background-modifier-hover));
+	background: var(--vscode-list-activeSelectionBackground);
 }
 
 /* Ctrl/Cmd+K link editor (R5) — plain DOM overlay, the one genuine rewrite
@@ -348,16 +374,16 @@ body {
 .mm-link-modal {
 	width: 320px;
 	max-width: 90%;
-	background: var(--background-primary);
-	color: var(--text-normal);
-	border: 1px solid var(--background-modifier-border);
+	background: var(--vscode-editorWidget-background);
+	color: var(--vscode-foreground);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
 	border-radius: 6px;
-	box-shadow: var(--shadow-s, 0 2px 8px rgba(0, 0, 0, 0.3));
-	padding: var(--size-4-4, 16px);
+	box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+	padding: 16px;
 }
 
 .mm-link-modal-title {
-	margin: 0 0 var(--size-4-3, 12px) 0;
+	margin: 0 0 12px 0;
 	font-size: 14px;
 }
 
@@ -365,17 +391,17 @@ body {
 	display: flex;
 	flex-direction: column;
 	gap: 4px;
-	margin-bottom: var(--size-4-3, 12px);
+	margin-bottom: 12px;
 }
 
 .mm-link-modal-label {
 	font-size: 12px;
-	color: var(--text-muted);
+	color: var(--vscode-descriptionForeground);
 }
 
 .mm-link-modal-desc {
 	font-size: 11px;
-	color: var(--text-muted);
+	color: var(--vscode-descriptionForeground);
 }
 
 .mm-link-modal-input,
@@ -383,9 +409,9 @@ body {
 	box-sizing: border-box;
 	width: 100%;
 	padding: 4px 6px;
-	background: var(--background-secondary);
-	color: var(--text-normal);
-	border: 1px solid var(--background-modifier-border);
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border));
 	border-radius: 4px;
 	font-size: 13px;
 }
@@ -393,24 +419,24 @@ body {
 .mm-link-modal-buttons {
 	display: flex;
 	justify-content: flex-end;
-	gap: var(--size-4-2, 8px);
-	margin-top: var(--size-4-2, 8px);
+	gap: 8px;
+	margin-top: 8px;
 }
 
 .mm-link-modal-buttons button {
 	padding: 4px 12px;
 	border-radius: 4px;
-	border: 1px solid var(--background-modifier-border);
-	background: var(--background-secondary);
-	color: var(--text-normal);
+	border: 1px solid var(--vscode-button-border, var(--vscode-editorWidget-border));
+	background: var(--vscode-button-secondaryBackground, var(--vscode-editorWidget-background));
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
 	cursor: pointer;
 	font-size: 12px;
 }
 
 .mm-link-modal-save {
-	background: var(--interactive-accent);
-	color: var(--text-on-accent);
-	border-color: var(--interactive-accent);
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-color: var(--vscode-button-background);
 }
 
 /* Right-click node menu (R17) — plain DOM overlay (see
@@ -420,27 +446,28 @@ body {
 	position: absolute;
 	z-index: 80;
 	min-width: 180px;
-	background: var(--background-primary);
-	color: var(--text-normal);
-	border: 1px solid var(--background-modifier-border);
+	background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+	color: var(--vscode-menu-foreground, var(--vscode-foreground));
+	border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border));
 	border-radius: 6px;
-	box-shadow: var(--shadow-s, 0 2px 8px rgba(0, 0, 0, 0.3));
+	box-shadow: 0 2px 8px var(--vscode-widget-shadow);
 	padding: 4px 0;
 	font-size: 12px;
 }
 
 .mm-context-menu-item {
-	padding: 6px var(--size-4-3, 12px);
+	padding: 6px 12px;
 	cursor: pointer;
 	white-space: nowrap;
 }
 
 .mm-context-menu-item:hover {
-	background: var(--background-modifier-hover);
+	background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+	color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
 }
 
 .mm-context-menu-item-disabled {
-	color: var(--text-faint);
+	color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground));
 	cursor: default;
 }
 
@@ -451,5 +478,5 @@ body {
 .mm-context-menu-separator {
 	height: 1px;
 	margin: 4px 0;
-	background: var(--background-modifier-border);
+	background: var(--vscode-menu-separatorBackground, var(--vscode-editorWidget-border));
 }

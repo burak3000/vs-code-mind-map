@@ -454,3 +454,103 @@ dev` first, no auto-build task is wired, see DECISIONS.md):
 10. **Re-run `bench:m1`/`bench:m2`/`bench:open` on an idle machine** and
     compare against M2's baseline numbers properly — this session's numbers
     are flagged, not trusted, for the reasons above.
+
+## M4 — Images, theming, settings
+
+No ported core file was touched (verified: `diff -rq webview/{model,layout,
+render,sync,controller}` vs the reference — zero diffs). `webview/main.ts`
+(image-resolver wiring, settings, clipboard-image-paste plumbing) and
+`src/MindMapEditorProvider.ts` (image resolution, config, the pasted-image
+write path) changed, so all four bench scripts were re-run — on an **idle
+window** this time (the per-op numbers below match the M2/M3 baseline to
+within noise, the independent confirmation that the machine was actually
+quiet, unlike M3's first contaminated run).
+
+### `npm run bench:images` (the M4-relevant script)
+
+```
+201 nodes (200 with an image embed): parse+layout=3.8ms mount=42.1ms
+open=51.4ms (budget 1000ms) [OK] pan-dispatch=3.1ms
+.mm-node-image elements created: 200
+```
+
+Comparable to the M1-era `bench:images` baseline (open ~48–64ms) — the M4
+image *resolution* round-trip doesn't show here because it's async and
+viewport-bounded (only culled-in nodes request a URL, off this synchronous
+open/mount path by design, plan §8); the `<img>` elements are created, the
+webview-URI resolution happens lazily afterward. Well within the 1,000ms
+open budget.
+
+### `npm run bench:m2` (regression check — byte-identical mutation core)
+
+| Fixture | Tab | Rename | Delete | Fold | Unfold | Serialize |
+|---|---|---|---|---|---|---|
+| 100 nodes | 4.3 ms | 2.9 ms | 3.0 ms | 2.5 ms | 6.1 ms | 0.3 ms |
+| 500 nodes | 3.9 ms | 4.0 ms | 3.6 ms | 4.4 ms | 6.9 ms | 0.3 ms |
+| 2,000 nodes | 10.2 ms | 11.4 ms | 12.0 ms | 8.6 ms | 11.0 ms | 0.4 ms |
+| 5,000 nodes (stress) | 29.6 ms | 26.4 ms | 23.5 ms | 17.2 ms | 24.6 ms | 0.7 ms |
+
+Matches the M3 idle baseline (Tab 4.0/4.1/10.1/28.1) within noise — no
+regression, as expected for untouched mutation/layout/render code. All
+within the 50ms target.
+
+### `npm run bench:open`
+
+| Fixture | Parse+colors+sides+layout | Mount | Total | Budget | Status |
+|---|---|---|---|---|---|
+| 100 nodes | 3.2 ms | 23.5 ms | 26.7 ms | 300 ms | OK |
+| 500 nodes | 4.9 ms | 7.5 ms | 12.4 ms | 300 ms | OK |
+| 2,000 nodes | 15.3 ms | 1.9 ms | 17.2 ms | 1,000 ms | OK |
+| 5,000 nodes (stress) | 32.3 ms | 1.8 ms | 34.1 ms | 2,000 ms | OK, no freeze |
+
+### Bundle sizes (`npm run build`)
+
+| Bundle | Raw | Gzip | Budget | M3 |
+|---|---|---|---|---|
+| `dist/extension.js` (host) | 7,738 B (7.6 KB) | — | < 500 KB target / 1 MB ceiling | 5.4 KB |
+| `media/webview.js` (webview) | 70,554 B (68.9 KB) | 21,238 B (20.7 KB) | < 500 KB target / 1 MB ceiling | 66.6 KB |
+
+Combined ~78 KB raw / ~23 KB gzip — **~15.6% of the 500 KB target**. The
+host grew ~2.2 KB (config reads, image resolution, the pasted-image write
+path); the webview ~2.3 KB (image-resolver wiring, settings, clipboard
+plumbing). Still no new dependency (just `d3-flextree`).
+
+### Test suite
+
+**368 passed / 0 skipped** (30 files) — M4 added `test/theming.test.ts`
+(asserts `media/mindmap.css` references `--vscode-*` variables, not
+Obsidian ones), `test/webviewConfig.test.ts` (settings load + live-update +
+next-open baking), and image-resolve + clipboard-image-write cases in
+`mindMapEditorProvider.test.ts` (including the pasted-image default-folder,
+`pastedImageFolder`-subfolder, and write-failure-falls-through paths).
+
+### High-contrast palette verdict
+
+**PASSES by construction** (see DECISIONS.md): the 8 per-branch color slots
+map to `--vscode-charts-*` / `--vscode-terminal-ansi*`, which every shipped
+theme (incl. both high-contrast variants) is required to keep legible
+against its own background. Not verified by a hand contrast calculation
+(deliberately — that's the fragility this avoids), so the one thing a human
+should still eyeball in a real window is that branch *hue identity* reads
+acceptably per-theme (it now varies with each theme's chart colors rather
+than being fixed hex).
+
+### REMAINING FOR HUMAN — real-window verification (M4)
+
+Headless as always. In a real Extension Development Host (F5):
+1. **Theming:** open a map on a light theme, a dark theme, and both
+   High Contrast themes (Light/Dark) — confirm nodes, edges, badges, the
+   inline editor, search panel, context menu, and link modal are all
+   legible and the 8 branch colors are distinguishable in each.
+2. **Images:** a node whose text is `![](some-image.png)` (relative to the
+   file) shows the thumbnail; one with a `https://…` image shows it too
+   (resolved with no host round trip); a broken path shows the renderer's
+   missing-image glyph, not a crash.
+3. **Settings:** change each `mindmapView.*` setting — confirm
+   `writeDebounceMs`/`externalEditForwardDebounceMs` take effect
+   immediately, and `layoutMode`/`headingDepth`/`animationNodeThreshold`
+   take effect on the next open (per DECISIONS.md's per-setting split).
+4. **Clipboard image paste:** copy a screenshot to the OS clipboard, paste
+   into the map — confirm a `pasted-image-<timestamp>.png` file appears
+   beside the document (or in `pastedImageFolder` if set), a new node shows
+   its thumbnail, and the file round-trips on reopen.

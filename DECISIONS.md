@@ -660,3 +660,356 @@ earlier "surfaced, pending" entry stays as the historical record).
    image-*display* work (R18) — implementing it in M3 would mean building
    and testing that plumbing twice. No image-save path was built in this
    milestone. Recorded as M4 scope in `PROGRESS.md`.
+
+---
+
+## 2026-07-17 — M4: localResourceRoots widened beyond media/
+
+**Context:** R18 (image display) needs `webview.asWebviewUri` to convert a
+node's image-embed target (resolved relative to the document's own
+directory) into a URL the webview is actually allowed to load. `Webview.
+options.localResourceRoots` gates that: only paths *under* one of the
+listed roots can ever be converted/served, and until now the only root was
+the extension's own `media/` directory (the bundle + CSS) — no workspace
+file could resolve at all.
+
+**Decision:** widen `localResourceRoots` (`MindMapEditorProvider.
+resolveCustomTextEditor`) to `[media/, ...vscode.workspace.workspaceFolders
+.map(f => f.uri), vscode.Uri.file(path.dirname(document.uri.fsPath))]` —
+every workspace folder, plus the document's own directory explicitly (so a
+loose file opened outside any workspace folder — no folder open at all, or
+the file lives outside every open folder — still resolves images relative
+to itself).
+
+**Alternatives considered:**
+- *Just the document's own directory* (no workspace folders) — rejected:
+  a very common case (`![[../assets/diagram.png]]`, or any image living in
+  a workspace-wide `attachments/` folder alongside many notes) would
+  reference a path outside the document's own directory and fail to
+  resolve, a worse gap than the security cost below.
+- *Compute the minimal common ancestor of the document dir and each
+  resolved embed target, one root per unique target* — rejected as
+  needless complexity for a per-request, dynamically-changing allowlist;
+  `localResourceRoots` is set once at `resolveCustomTextEditor` time, not
+  per message, so it would need to be *widened* reactively per new image
+  target encountered (extra IPC, extra state, no real security gain since
+  the whole workspace is already implicitly trusted content the moment its
+  markdown is opened in this same editor).
+
+**Security implication (accepted, not silently):** any file under a
+listed root becomes fetchable by the webview's own script via a
+constructed `asWebviewUri`-shaped URL, not just the specific image(s)
+actually embedded in the current document — a markdown file could in
+principle embed `![[../../.env]]` and have its bytes requested as an
+`<image>` src. Two mitigating factors, neither a full answer: (1) the
+webview's script is still CSP-locked to our own nonce-tagged bundle — this
+widens what *our own, trusted* code is *permitted* to read, it does not
+let injected/attacker content run new code; (2) a non-image file loaded
+into an SVG `<image>` element fails to decode and never becomes visible or
+otherwise exfiltratable through the DOM the way, say, a `<script src>`
+would. Still a real widening of the trust boundary versus "just media/",
+and workspace trust (`vscode.workspace.isTrusted` / the `untrustedFiles`
+capability declaration) is the correct real mitigation — that's explicitly
+M5 scope (per the plan's roadmap: "workspace-trust/virtual-workspace
+declarations"), so this is accepted as an interim state for M4, not
+resolved here. Flagged in `PROGRESS.md`'s M4 status and `benchmarks.md`'s
+F5 checklist.
+
+**Cost:** none measurable — `localResourceRoots` is a startup-time
+allowlist check inside `asWebviewUri`, not a per-frame or per-keystroke
+cost.
+
+---
+
+## 2026-07-17 — M4: image resolution is async (host round trip) but only for culled-in nodes, and the renderer's own dirty-tracking forces a debounced `mount()` rather than a plain `update()` to show a resolved image
+
+**Context:** the ported (unmodified) `SvgRenderer.setImageResolver` takes a
+**synchronous** `(node) => string | null` function — Obsidian's own
+`resolveNodeImageUrl` could answer synchronously (`vault.getResourcePath`
+is sync). VS Code's equivalent (`webview.asWebviewUri`) is *also*
+synchronous, but only the **host** can call it (it needs `document.uri` +
+the webview's own `cspSource`/root allowlist) — the webview process has no
+such API. So resolution has to cross the process boundary, which is
+inherently async, layered underneath a resolver interface the ported
+renderer requires to return an answer *immediately*.
+
+**Decision:** `resolveImageUrl` (webview/main.ts) never blocks: it checks a
+local `Map<string, string|null>` cache (keyed `${nodeId}\0${target}`,
+which naturally misses instead of showing a stale image if a node's embed
+target changes); on a miss it fires a `resolveImage` postMessage (once —
+guarded by an `imagePending` Set so the renderer's own repeated per-draw
+resolver calls don't refire the same request) and returns `null` for now,
+which the (untouched) renderer already renders as its own placeholder/
+missing-glyph state. A remote (`https://…`) target resolves synchronously
+to itself, no round trip at all — same split `openLink` already makes.
+This is called *only* for a node `SvgRenderer` has actually drawn (mount/
+update only walks the culled-in set above the 300-node threshold), so the
+round-trip volume is bounded by the viewport, not map size — preserving
+the reference's lazy-load design exactly as the plan requires.
+
+**The dirty-tracking wrinkle (found while writing `test/webviewConfig.
+test.ts`):** `SvgRenderer.upsertImage` — and therefore the resolver call
+itself — only re-runs when a node's text/size/side changed (see its own
+doc comment: "only called when text/size/side actually changed"). A plain
+`renderer.update(model)` call after an `imageResolved` reply arrives is a
+no-op for that node: nothing about the *model* changed, only the
+resolver's own cached answer did, so the dirty check never trips and the
+image would silently stay on its placeholder forever. The one public API
+that unconditionally re-derives every visible node is `mount()` (it clears
+the renderer's internal dirty-tracking maps first) — but `mount()` is
+documented as "intended for file open only, not per-edit" and is a full
+remove+recreate of every currently-visible node's DOM.
+
+Rather than edit the protected renderer to add a narrower "refresh just
+this node's image" method (out of scope per the task's hard rule — would
+require justifying and pausing for approval before touching `webview/
+render/`), `onImageResolved` calls a **debounced** `mount()` (`webview/
+main.ts`'s `refreshResolvedImages`, 50ms) instead of an immediate one.
+Rationale for debouncing rather than calling `mount()` directly per reply:
+a freshly-opened map with many visible images — exactly `bench:images`'
+own 200-image stress fixture — fires one `resolveImage` per node during
+the single initial `mount()` pass, and the host's replies arrive as
+**separate `postMessage` deliveries** (separate macrotasks, not
+microtasks — a same-tick `Promise.resolve().then()` batching trick would
+not coalesce across them, since microtasks fully drain before the next
+message-event task even starts). Without debouncing, a worst-case cold
+open could trigger on the order of 200 full remounts of the ~200-node
+visible set in quick succession; debounced, a realistic reply burst
+collapses to close to one trailing remount. This is **not** treated as a
+CLAUDE.md rule-3 performance-vs-something trade-off requiring escalation:
+it has no user-visible downside to weigh against (a thumbnail still "pops
+in" within ~50ms of resolving either way) and strictly improves on the
+naive alternative — there's no richer feature, simpler code, or different
+scope being traded away by choosing to batch.
+
+**Cost:** `bench:images` (200 image-embedded nodes, worst case the plan
+calls out) — `parse+layout=3.5ms mount=38.0ms open=46.6ms` (budget
+1,000ms) — see `benchmarks.md`'s M4 section for the full table; no
+regression vs. M0's first recording of this same benchmark (the ported
+render/layout code under test is unchanged).
+
+---
+
+## 2026-07-17 — M4: theming — pure CSS, no theme-change message channel, and the branch palette maps to VS Code's own chart/terminal colors instead of new hand-picked hex values
+
+**Context:** plan §8 calls for swapping Obsidian's CSS variables for
+`--vscode-*` ones and verifying the result on light, dark, *and*
+high-contrast, flagging a "palette must pass on light/dark/HC or ask"
+escalation trigger specifically about the reference's 8-slot per-branch
+palette (R9).
+
+**Decision, part 1 (mechanism):** pure CSS, no `onDidChangeActiveColorTheme`
+listener/message. VS Code injects `--vscode-*` custom properties (and a
+`body.vscode-light`/`vscode-dark`/`vscode-high-contrast`/
+`vscode-high-contrast-light` class) into every webview automatically and
+keeps both live-updated across a theme switch with no reload — so a CSS
+file that only ever references those variables repaints for free. Verified
+by reading VS Code's own webview theming documentation (referenced in the
+plan) rather than assumed; no code in `webview/main.ts` was needed at all
+for this part.
+
+**Decision, part 2 (the R9 palette question — resolved, not escalated):**
+before rewriting the CSS, the reference's own two tone sets (a "light"
+mid-dark saturated set and a "dark" bright-pastel set — see `media/
+mindmap.css`'s pre-M4 history) were checked against WCAG contrast ratios
+for a plausible high-contrast rendering (pure-black or pure-white surfaces,
+which is what VS Code's built-in High Contrast themes actually use, unlike
+a typical light/dark theme's softer off-white/dark-grey). Result: the
+"dark" set reused for a dark HC background passed comfortably (~8–15:1,
+computed by hand for several slots); the "light" set reused for a
+**light** HC background did not — 5 of 8 slots measured under the 4.5:1
+WCAG AA threshold, one (`#f08c00`, the orange slot) as low as **2.48:1**.
+
+This is exactly the "palette doesn't pass HC" case the task flagged as a
+stop-and-ask trigger — **except** the premise (that fixing it means
+editing the protected `render/colors.ts`) doesn't hold: `colors.ts` only
+assigns which of 8 opaque slot *keys* (`c0`..`c7`) a branch gets; the
+actual hex values those keys resolve to have always lived in `media/
+mindmap.css`, a file explicitly in this milestone's edit scope, not
+`colors.ts`. So there was no protected file standing between "the palette
+fails HC" and "fix the palette." Rather than hand-picking a *third* tone
+set and re-deriving contrast ratios by hand again (correct today, but
+silently wrong the instant VS Code ships a new HC variant, or wrong for a
+user's custom HC-adjacent theme), every one of the 8 slots is mapped
+directly to a VS Code theme-contributed categorical color instead:
+`--vscode-charts-{red,blue,green,orange,purple,yellow}` for 6 slots, and
+`--vscode-terminal-ansi{Magenta,Cyan}` for the remaining 2 (chart colors
+only cover 6 hues). Every shipped VS Code theme — dark, light, both
+high-contrast variants, and any well-formed custom theme — is required to
+keep its chart/terminal colors legible against its own backgrounds (this
+is exactly the mechanism that makes the integrated terminal and built-in
+chart-consuming extensions usable in High Contrast mode already), so this
+sidesteps the fidelity-vs-adaptation question rather than deciding it by
+hand: no hex value chosen here can ever be "wrong" for a theme this
+extension has never seen tested against.
+
+**High-contrast verdict: PASSES**, by construction, for both HC variants —
+not by re-running a hand contrast calculation against a hardcoded palette
+(which is exactly the thing this decision avoids repeating), but because
+the 8 slots no longer own any color data of their own to verify; they
+inherit whatever the active theme itself already guarantees for its own
+chart/terminal colors. This is flagged here explicitly (rather than
+silently shipped) because it's a real design choice — hue *identity*
+across branches is no longer guaranteed pixel-identical between themes the
+way the reference's fixed hex-per-theme sets were (e.g. "branch 3 is
+always exactly `#e8590c`"); it now varies with whatever a given theme
+authors chose for `charts.orange`. If strict cross-theme hue fidelity
+turns out to matter more than always-correct-contrast in practice (a real
+product question a screenshot-comparing user might raise), that's the
+trade-off to revisit — surfaced here, not silently foreclosed.
+
+**Alternatives considered:** (a) hand-picking a third HC-specific hex tone
+set — rejected per above (unverifiable against future/custom themes,
+doubles the maintenance surface); (b) keeping the reference's exact hex
+values and accepting the HC-light contrast failure as a known gap —
+rejected, since a fix that costs nothing (no new dependency, no new
+architecture, `--vscode-charts-*`/`--vscode-terminal-ansi*` are already
+free to reference) was available.
+
+**Cost:** none — swapping `var(--mm-color-c0)`'s definition from a literal
+hex to `var(--vscode-charts-red)` is free at both build and paint time.
+
+---
+
+## 2026-07-17 — M4: settings — three of four apply live, one setting is host-only; layoutMode/headingDepth/animationNodeThreshold bake in at buildFromScratch (next-open-only), not live
+
+**Context:** plan §9 M4 calls for `contributes.configuration` (layout mode,
+heading depth, write-back delay, animation cutoff) "with live config
+updates," while separately noting the reference baked its own equivalent
+settings at construction (its `SettingsTab.ts`'s own tooltips literally say
+"Changing this only affects maps opened after saving" for 3 of its 4
+settings) — the task asked to decide, deliberately, per setting, not
+default to one blanket answer.
+
+**Decision — five settings total** (`package.json`'s `contributes.
+configuration`, mirrored in `MindMapEditorProvider.ts`'s
+`MindMapWebviewConfig`/`readWebviewConfig` and `webview/main.ts`'s own
+`MindMapWebviewConfig`): `writeDebounceMs` (400), the M1-flagged
+`externalEditForwardDebounceMs` (300, host-only — the webview never sees
+it), `animationNodeThreshold` (500), `headingDepth` (1), `layoutMode`
+("balanced"). Host reads `vscode.workspace.getConfiguration("mindmapView",
+document.uri)` (resource-scoped, so a multi-root workspace's per-folder
+override applies) once per panel at `resolveCustomTextEditor` time, posts
+a `setConfig` message *before* the first `setDocument` (order matters —
+see below), and again on every `onDidChangeConfiguration` that
+`affectsConfiguration("mindmapView", document.uri)`.
+
+**Per-setting live-vs-next-open split, and why it isn't one blanket rule:**
+- **`writeDebounceMs`** — live. It's a plain debounce-wrapper delay
+  entirely owned by `webview/main.ts`; `applyConfig` rebuilds
+  `scheduleWrite` with the new delay as soon as a `setConfig` arrives. (A
+  pending write already in flight under the old delay is simply orphaned —
+  harmless, since the new wrapper still fires on the very next mutation;
+  not worth hand-migrating a live `setTimeout` for a settings change this
+  rare.)
+- **`externalEditForwardDebounceMs`** — live, host-only. Read into a
+  `let` (not `const`) closure variable per panel in `resolveCustomTextEditor`,
+  used directly by the next `setTimeout` call in the `onDidChangeTextDocument`
+  handler — no restart needed, nothing to bake.
+- **`animationNodeThreshold`** — next-open-only, and not actually a
+  *choice*: the ported `SvgRenderer`'s constructor parameter is `private
+  readonly` — there is no live setter to call without editing the
+  protected renderer, so this one is bound by the protected file itself,
+  not a preference.
+- **`layoutMode`/`headingDepth`** — next-open-only, and here it *is* a
+  deliberate choice, not a technical wall (both are plain data read at
+  `computeLayout`/`serializeMindMap` call sites, which already re-run on
+  every edit): applying a `layoutMode` change live would mean recomputing
+  every first-level branch's side assignment for the *current* map — a
+  visual reshuffle indistinguishable from an unrequested "Rebalance" the
+  user didn't ask for. Applying a `headingDepth` change live would mean
+  the *next* keystroke's write-back silently rewrites every existing
+  heading/list-item marker in the file to match the new depth, not just
+  new content going forward — a much bigger diff than the user's own edit
+  would suggest. Both mirror the reference's own settled choice (its
+  `SettingsTab.ts` tooltip: "Takes effect for maps opened after saving")
+  — carried over rather than re-litigated, per CLAUDE.md's own carry-over
+  clause for a reference-repo decision the user already approved there.
+
+`buildFromScratch` (webview/main.ts) is the only place `layoutMode`/
+`headingDepth`/`animationNodeThreshold` are actually read from
+`this.config` — a `setConfig` arriving after that point is still cached
+(so the *next* full open picks it up) but never re-baked into the running
+session's `layoutConfig`/`serializeConfig`/renderer instance.
+`rebuildFromExternalText` (a genuine external edit to the same open map)
+reuses the already-baked `layoutConfig`/`serializeConfig`, matching "next
+*open*," not "next *external rebuild*."
+
+**Order dependency:** the host always posts `setConfig` before the first
+`setDocument` reply to "ready" (both inside the same `onDidReceiveMessage`
+"ready" branch, in that order) — `postMessage` delivery preserves send
+order, so the webview's `buildFromScratch` (triggered by that first
+`setDocument`) is guaranteed to already have the real config cached, not
+`DEFAULT_CONFIG`. `webview/main.ts`'s own `DEFAULT_CONFIG` constant exists
+purely as a defensive fallback for that ordering guarantee somehow ever
+being broken, not as an expected code path.
+
+**Alternatives considered:** one blanket "everything bakes at
+buildFromScratch, nothing is ever live" (simpler to state, but throws away
+a real, free win for the two debounce settings, which have zero technical
+or UX reason to wait for a reopen) and one blanket "everything posts fresh
+and is applied immediately, always" (the reference itself rejected this
+for exactly `layoutMode`/`headingDepth`, for reasons that apply here
+identically — carried over, not re-derived from scratch).
+
+**Cost:** negligible — `getConfiguration`/`get` calls are synchronous,
+cheap VS Code API reads; the `onDidChangeConfiguration` subscription is
+one more `Disposable` per panel, torn down on `onDidDispose` alongside the
+other two.
+
+---
+
+## 2026-07-17 — M4: clipboard-image paste save location — a `mindmapView.pastedImageFolder` setting, default alongside the document (escalation resolved by the user)
+
+**Context:** the M4 agent plumbed clipboard-image paste end-to-end (webview
+reads the OS clipboard image, base64-encodes it, posts a `writeImage`
+message; host writes the file, returns the embed markdown; webview inserts
+it via the ported `Controller.pasteImageAsChild`) but left the host's
+`writeImage` a deliberate stub returning `embedText: null` — because VS
+Code, unlike Obsidian's vault, has no configured "attachment folder," so
+*where* a pasted image is written had no settled answer. That was escalated
+to the user (not decided by the agent), per CLAUDE.md's ask-don't-guess
+discipline. (Note: this is a product/UX design fork, not a
+performance-vs-X trade-off, so it wasn't a rule-3 escalation specifically —
+it was surfaced under the same spirit.)
+
+**Decision (user, 2026-07-17):** a `mindmapView.pastedImageFolder` setting —
+a path relative to the markdown file's own folder, default `""` = write
+alongside the file. Implemented in `MindMapEditorProvider.writeImage`:
+- Read fresh on every paste (`readPastedImageFolder`), not baked into the
+  session — a settings change applies to the very next paste. Consistent
+  with the M4 settings entry's treatment of the two debounce settings as
+  live; nothing here needs a session rebuild.
+- Filenames are `pasted-image-<YYYYMMDDHHmmss>.<ext>`, **hyphenated (no
+  spaces)** so the emitted `![](…)` is valid CommonMark without angle-bracket
+  wrapping or percent-encoding (N3 markdown-friendliness) — a deliberate
+  divergence from the reference's space-containing `Pasted image ….png`,
+  which was fine only because Obsidian emitted it as a `![[wikilink]]`.
+  Collision-suffixed (`-1`, `-2`, …) via an `fs.stat` existence check if a
+  same-second paste already took the name.
+- Emits a standard markdown embed `![](relative/path)` (not a wikilink) —
+  plain-markdown-native, and the target is a POSIX-relative path from the
+  document's folder so it round-trips through the same `getImageEmbed`
+  (parse) / `resolveImage` (host resolve against docDir) pair M4's image
+  *display* already uses. So a pasted image is immediately displayable by
+  the very resolver built earlier in the milestone, no extra wiring.
+- The folder is created if missing (`fs.createDirectory`, recursive/no-op
+  for the default same-dir case). Any failure (unwritable folder, empty
+  data) returns `embedText: null`, which the webview's `handlePaste`
+  already treats as "no usable image" and falls through to text-paste — a
+  paste never crashes or hangs.
+
+**Alternatives considered:** (a) always same folder, no setting — rejected
+as needlessly inflexible when a one-line setting gives both the sensible
+default *and* an `assets/`-style option; (b) a fixed `assets/` subfolder —
+rejected: imposes a directory the user didn't ask for as the *default*,
+whereas the setting lets them opt into exactly that if they want it; (c)
+matching Obsidian's wikilink embed form — rejected for plain-markdown
+friendliness (see filename note above).
+
+**Cost:** none on any interactive path — the write is a one-shot host
+operation on an explicit paste, off the keystroke loop entirely; the
+`fs.stat` collision check is one stat per paste (bounded, not per-frame).
+No new dependency.
+
+**This resolves M4's one open escalation. M4 is now feature-complete.**

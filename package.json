@@ -120,7 +120,52 @@
 				"mac": "cmd+m",
 				"when": "editorTextFocus && editorLangId == 'markdown'"
 			}
-		]
+		],
+		"configuration": {
+			"title": "Mind Map View",
+			"properties": {
+				"mindmapView.writeDebounceMs": {
+					"type": "number",
+					"default": 400,
+					"minimum": 100,
+					"maximum": 5000,
+					"description": "How long to wait (ms) after your last edit in the map before writing it back to the file. Takes effect immediately for already-open maps."
+				},
+				"mindmapView.externalEditForwardDebounceMs": {
+					"type": "number",
+					"default": 300,
+					"minimum": 0,
+					"maximum": 5000,
+					"description": "How long to wait (ms) after an external change to the file (e.g. edited in a split text editor) before refreshing an open map. Takes effect immediately for already-open maps."
+				},
+				"mindmapView.animationNodeThreshold": {
+					"type": "number",
+					"default": 500,
+					"minimum": 50,
+					"maximum": 10000,
+					"description": "Above this many visible nodes, fold/unfold position animations turn off and changes apply instantly. Takes effect the next time a map is opened."
+				},
+				"mindmapView.headingDepth": {
+					"type": "number",
+					"default": 1,
+					"minimum": 0,
+					"maximum": 5,
+					"description": "Nodes at or above this depth are written as markdown headings; deeper nodes become list items. Root is depth 0 (always H1); the default (1) means first-level branches are H2. Takes effect the next time a map is opened."
+				},
+				"mindmapView.layoutMode": {
+					"type": "string",
+					"enum": ["balanced", "right-only", "left-only"],
+					"enumDescriptions": ["Balance first-level branches left and right of the root", "Place all first-level branches to the right of the root", "Place all first-level branches to the left of the root"],
+					"default": "balanced",
+					"description": "How first-level branches are arranged around the root. Takes effect the next time a map is opened."
+				},
+				"mindmapView.pastedImageFolder": {
+					"type": "string",
+					"default": "",
+					"description": "Folder, relative to the markdown file's own folder, where images pasted from the clipboard into the map are saved. Empty (the default) saves them alongside the file. Example: \"assets\". Read fresh on each paste, so it takes effect immediately."
+				}
+			}
+		}
 	},
 	"scripts": {
 		"dev": "node esbuild.config.mjs",

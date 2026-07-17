@@ -462,10 +462,14 @@ describe("webview bootstrap (main.ts) — M3 feature wiring", () => {
 		expect(document.querySelector(".mm-context-menu")).toBeNull();
 	});
 
-	it("Ctrl/Cmd+C copies the selected subtree to the OS clipboard as markdown, and Ctrl/Cmd+V pastes it as a new child", () => {
+	it("Ctrl/Cmd+C copies the selected subtree to the OS clipboard as markdown, and Ctrl/Cmd+V pastes it as a new child", async () => {
 		resetTree();
 		const writeText = vi.fn().mockResolvedValue(undefined);
 		const readText = vi.fn();
+		// No `read` (the image-clipboard API) on this fake — `handlePaste`'s
+		// M4 image-check (`pasteClipboardImage`) sees `typeof read !==
+		// "function"` and resolves to null (one extra microtask tick vs.
+		// before M4 added it) before falling through to this same text path.
 		(navigator as unknown as { clipboard: unknown }).clipboard = { writeText, readText };
 
 		selectNodeByText("child one");
@@ -480,9 +484,7 @@ describe("webview bootstrap (main.ts) — M3 feature wiring", () => {
 		selectNodeByText("Branch B");
 		const before = nodeTexts().length;
 		keydown("v", { ctrlKey: true });
-		return Promise.resolve().then(() => {
-			expect(nodeTexts().length).toBe(before + 1);
-			expect(nodeTexts().filter((t) => t === "child one").length).toBe(2); // original + pasted clone
-		});
+		await vi.waitFor(() => expect(nodeTexts().length).toBe(before + 1));
+		expect(nodeTexts().filter((t) => t === "child one").length).toBe(2); // original + pasted clone
 	});
 });

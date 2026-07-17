@@ -1,4 +1,5 @@
-// Webview bootstrap (bundled to media/webview.js) — M3: full feature parity.
+// Webview bootstrap (bundled to media/webview.js) — M4: images, theming,
+// settings, on top of M3's full feature parity.
 //
 // Per CLAUDE.md rule 7, the entire interaction loop lives here in the
 // webview: parse -> colors/sides -> layout -> SvgRenderer, keyboard
@@ -6,22 +7,33 @@
 // drag-reorder, links, search, context menu, multi-select clipboard, and
 // serialization. The extension host is only the persistence layer plus a
 // handful of platform actions (open a link, reveal a note section, swap
-// editor kind) it is uniquely positioned to perform — it posts the
-// document text on resolve/external edit, applies a `WorkspaceEdit` when
-// this file posts a "writeDocument" message, and opens links/reveals text
-// on request. Nothing here ever blocks on a host round-trip for the
-// interactive loop itself; the one exception (flushWrite, below) is a
+// editor kind, resolve an image path, write a pasted image) it is uniquely
+// positioned to perform — it posts the document text on resolve/external
+// edit, applies a `WorkspaceEdit` when this file posts a "writeDocument"
+// message, opens links/reveals text on request, and (M4) resolves a node's
+// image embed to a webview-loadable URL. Nothing here ever blocks on a host
+// round-trip for the interactive loop itself; image resolution is the one
+// new *async* dependency, but per the plan it only ever runs for a node the
+// renderer has actually mounted (culled-in), never on the keystroke path —
+// see `resolveImageUrl` below. The other exception (flushWrite) is a
 // deliberate one-time administrative wait before the Ctrl/Cmd+M toggle or
 // "Go to section", exactly like the reference's own `flushPendingWrite`.
 //
-// M4+ concerns are omitted, not stubbed: no image thumbnail resolution
-// (asWebviewUri), no live theme/config messages, no clipboard-image paste
-// (scope question — see the M3 report) — each is called out where the
-// reference wires it, so the diff against the reference stays legible.
+// Theming (R-theming) needed no code here at all — it's pure CSS
+// (`media/mindmap.css`), since VS Code updates `--vscode-*` custom
+// properties and the webview body's theme class live on a theme switch.
+//
+// Clipboard-image paste (moved from M3, see PROGRESS.md/DECISIONS.md) is
+// plumbed end-to-end (clipboard read here, `writeImage` round trip, insert
+// via the ported `Controller.pasteImageAsChild`) but the host's
+// `writeImage` handler is a deliberate stub — the pasted-image save
+// location is escalated, not decided (see MindMapEditorProvider.ts's
+// `writeImage`), so today this always falls through to the existing
+// text-paste path, exactly like before this file changed.
 
 import { parseMindMap } from "./sync/parser";
 import { serializeMindMap, serializeSubtree, DEFAULT_SERIALIZE_CONFIG, SerializeConfig } from "./sync/serializer";
-import { computeLayout, DEFAULT_LAYOUT_CONFIG, LayoutConfig } from "./layout/layoutEngine";
+import { computeLayout, DEFAULT_LAYOUT_CONFIG, LayoutConfig, LayoutMode } from "./layout/layoutEngine";
 import { SvgRenderer } from "./render/SvgRenderer";
 import { Controller, ControllerListener } from "./controller/Controller";
 import { assignMissingColors } from "./render/colors";
@@ -38,7 +50,7 @@ import { collectVisibleNodes } from "./model/visibility";
 import { searchNodes } from "./model/search";
 import { resolveGoToTarget, GoToTarget } from "./sync/goToSection";
 import { parseExternalPaste } from "./sync/parseExternalPaste";
-import { LinkKind, getSoleLink, buildLinkText } from "./model/links";
+import { LinkKind, getSoleLink, buildLinkText, getImageEmbed } from "./model/links";
 import { MindNode } from "./model/types";
 
 /** Minimal typing for the API VS Code injects into every webview. Declared here instead of adding a @types/vscode-webview devDependency for one function signature. */
@@ -72,17 +84,57 @@ interface CommandMessage {
 	name: "undo" | "redo" | "search" | "rebalance" | "linkEditor" | "toggleFold" | "flushWrite";
 }
 
-type HostMessage = SetDocumentMessage | CommandMessage;
-
 /**
- * Write-back debounce (plan §6): 400 ms after the last mutation, same
- * provisional-default treatment as the M1 external-edit forward debounce
- * (300 ms, in `MindMapEditorProvider.ts`) — becomes a setting in M4.
- * Living in the webview (not the host) means every keystroke-driven
- * mutation batches locally before a single `postMessage` crosses the
- * process boundary, not just before the host's `WorkspaceEdit` fires.
+ * Host -> webview (M4 settings, plan §9): the four settings that get baked
+ * into (or, for `writeDebounceMs`, live-applied to) this webview session —
+ * mirrors `MindMapEditorProvider.ts`'s `MindMapWebviewConfig` and the
+ * reference's `PluginSettings.ts`. Sent once before the first
+ * "setDocument" (so `buildFromScratch` bakes the right values) and again
+ * on every `onDidChangeConfiguration` the host observes.
  */
-const WRITE_DEBOUNCE_MS = 400;
+interface SetConfigMessage {
+	type: "setConfig";
+	config: MindMapWebviewConfig;
+}
+
+/** Host -> webview (R18): the resolved webview-loadable URL for a node's image embed (or `null` if resolution failed) — see `resolveImageUrl` below for the request side. */
+interface ImageResolvedMessage {
+	type: "imageResolved";
+	nodeId: string;
+	target: string;
+	url: string | null;
+}
+
+/** Host -> webview: reply to a "writeImage" request (clipboard-image paste plumbing) — `embedText` is `null` until the pasted-image save location is decided (escalated, see this file's header comment and MindMapEditorProvider.ts's `writeImage`). */
+interface ImageWrittenMessage {
+	type: "imageWritten";
+	id: number;
+	embedText: string | null;
+}
+
+type HostMessage = SetDocumentMessage | CommandMessage | SetConfigMessage | ImageResolvedMessage | ImageWrittenMessage;
+
+/** Mirrors `MindMapEditorProvider.ts`'s `MindMapWebviewConfig` and `package.json`'s `contributes.configuration` — see DECISIONS.md's dated "M4 settings" entry for which of these four apply live vs. only to the next-opened map, and why. */
+interface MindMapWebviewConfig {
+	writeDebounceMs: number;
+	animationNodeThreshold: number;
+	headingDepth: number;
+	layoutMode: LayoutMode;
+}
+
+/** Same values as the reference's `DEFAULT_SETTINGS` / this extension's `package.json` defaults — used until the host's first "setConfig" arrives (always before the first "setDocument", but defensive in case that guarantee is ever broken). */
+const DEFAULT_CONFIG: MindMapWebviewConfig = {
+	writeDebounceMs: 400,
+	animationNodeThreshold: 500,
+	headingDepth: DEFAULT_SERIALIZE_CONFIG.headingDepth,
+	layoutMode: DEFAULT_LAYOUT_CONFIG.mode,
+};
+
+/** A scheme-qualified URL (`https://…`, not a workspace-relative path) — an image embed whose target matches this resolves synchronously to itself (same as a link click's split — see `openLink`/`MindMapEditorProvider.ts`'s identical regex), no host round trip needed. */
+const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/** How long to wait for more "imageResolved" replies to arrive before remounting to show them — see `refreshResolvedImages`'s own doc comment for why this needs to be a real (macrotask) debounce, not a microtask trick. */
+const IMAGE_REFRESH_DEBOUNCE_MS = 50;
 
 /** Escapes a string for safe interpolation into a `RegExp` — used by `resolveTargetLine` to match a block-id/heading target's exact text. */
 function escapeRegExp(text: string): string {
@@ -99,22 +151,81 @@ class MindMapApp implements ControllerListener {
 	/** Highest TextDocument.version rendered so far. postMessage delivery order isn't contractual, so a message carrying an older version than what's on screen is dropped rather than applied backwards. */
 	private lastVersion = -1;
 	private title = "Untitled";
-	// Settings (layout mode, animation threshold, heading depth) are M4;
-	// until then the ported defaults apply, same values the reference uses.
-	private readonly layoutConfig: LayoutConfig = DEFAULT_LAYOUT_CONFIG;
-	private readonly serializeConfig: SerializeConfig = DEFAULT_SERIALIZE_CONFIG;
+	/**
+	 * Latest config the host has told us about — updated on every
+	 * "setConfig", but only `writeDebounceMs` is *applied* immediately
+	 * (`applyConfig` below rebuilds `scheduleWrite`'s debounce delay).
+	 * `layoutMode`/`headingDepth`/`animationNodeThreshold` are read only at
+	 * `buildFromScratch` time, baking into `layoutConfig`/`serializeConfig`/
+	 * the renderer's constructor argument for *this* session — a config
+	 * change afterward is cached here for the next full open, never
+	 * applied to the already-mounted map. See DECISIONS.md's dated "M4
+	 * settings" entry for why (a real technical constraint for the
+	 * renderer's threshold, a deliberate UX choice mirroring the reference
+	 * for the other two).
+	 */
+	private config: MindMapWebviewConfig = DEFAULT_CONFIG;
+	private layoutConfig: LayoutConfig = { ...DEFAULT_LAYOUT_CONFIG };
+	private serializeConfig: SerializeConfig = { ...DEFAULT_SERIALIZE_CONFIG };
 
 	/** Latest serialized text for the current model — the write-back payload. */
 	private data = "";
 	/** The text as of the last confirmed baseline (initial load, external rebuild, or a write-back we've actually posted) — compared against `data` to tell "there's a real unwritten local edit" apart from "a write is merely scheduled" (e.g. a plain selection change re-serializes to identical text — see the reference's identical `hasPendingWrite` check in MindMapView.onVaultModify). */
 	private lastWrittenText = "";
-	private readonly scheduleWrite: ReturnType<typeof debounce>;
+	private scheduleWrite: ReturnType<typeof debounce>;
 
 	/** The last markdown text *we* wrote to the OS clipboard (tree copy) — paste compares against this to tell "internal copy/cut" apart from "user copied something else outside this extension" (plan item 06, R16). */
 	private lastWrittenClipboardText: string | null = null;
 
+	/**
+	 * R18 image resolution cache/in-flight set, keyed by `${nodeId}\0${target}`
+	 * so a node whose embed target changes (edited text) naturally misses
+	 * instead of showing a stale image. `imageCache` holds the resolved URL
+	 * (or `null` for "asked, host says unresolvable"); `imagePending` guards
+	 * against re-requesting the same key on every one of the renderer's own
+	 * per-node resolver calls (it calls back on every mount/update pass for
+	 * a mounted image node, not just once).
+	 */
+	private readonly imageCache = new Map<string, string | null>();
+	private readonly imagePending = new Set<string>();
+
+	/** Clipboard-image paste (M4): monotonic id for the "writeImage" request/response round trip, and the resolvers waiting on each in-flight one — see `pasteClipboardImage`. */
+	private writeImageRequestId = 0;
+	private readonly pendingWriteImageResolvers = new Map<number, (embedText: string | null) => void>();
+
+	/**
+	 * `SvgRenderer.upsertImage` (the ported, unmodified renderer — see its
+	 * own doc comment) only re-derives a node's image `href` when that
+	 * node's text/size/side actually changed; a plain `update()` call after
+	 * an "imageResolved" arrives would *not* re-run the resolver for a node
+	 * whose model data hasn't changed, only its resolver's cached answer
+	 * has. `mount()` is the one public entry point that unconditionally
+	 * re-derives every visible node (it clears the renderer's own dirty-
+	 * tracking maps first) — but it is, deliberately, the "whole visible
+	 * set" operation, not a single-node one, since there's no narrower
+	 * public API to add without editing the protected renderer.
+	 *
+	 * Debounced (not called directly from `onImageResolved`) because a
+	 * freshly-opened map with many visible images (the exact "hundreds of
+	 * images all in-viewport" case `bench:images` stress-tests) fires one
+	 * "resolveImage" per node up front, and the host's replies arrive as
+	 * separate `postMessage` deliveries (separate tasks, not microtasks —
+	 * a same-tick `Promise.resolve().then()` batching trick would not
+	 * coalesce them, since each message event is its own macrotask).
+	 * Coalescing a burst of replies into one trailing `mount()` keeps the
+	 * remount count near O(1) per burst instead of O(images) — cheap
+	 * insurance, not a rule-3 trade-off (it has no user-visible downside
+	 * to weigh against; a per-image thumbnail still "pops in" within
+	 * `IMAGE_REFRESH_DEBOUNCE_MS` of resolving, same felt latency as
+	 * before batching).
+	 */
+	private readonly refreshResolvedImages: ReturnType<typeof debounce>;
+
 	constructor(private readonly container: HTMLElement, private readonly vscode: VsCodeWebviewApi) {
-		this.scheduleWrite = debounce(() => this.writeNow(), WRITE_DEBOUNCE_MS);
+		this.scheduleWrite = debounce(() => this.writeNow(), this.config.writeDebounceMs);
+		this.refreshResolvedImages = debounce(() => {
+			if (this.controller && this.renderer) this.renderer.mount(this.controller.model);
+		}, IMAGE_REFRESH_DEBOUNCE_MS);
 	}
 
 	onHostMessage(msg: unknown): void {
@@ -123,6 +234,20 @@ class MindMapApp implements ControllerListener {
 
 		if (m.type === "command") {
 			this.handleCommand(m.name);
+			return;
+		}
+		if (m.type === "setConfig") {
+			this.applyConfig(m.config);
+			return;
+		}
+		if (m.type === "imageResolved") {
+			this.onImageResolved(m.nodeId, m.target, m.url);
+			return;
+		}
+		if (m.type === "imageWritten") {
+			const resolve = this.pendingWriteImageResolvers.get(m.id);
+			this.pendingWriteImageResolvers.delete(m.id);
+			resolve?.(m.embedText);
 			return;
 		}
 		if (m.type !== "setDocument") return;
@@ -179,8 +304,72 @@ class MindMapApp implements ControllerListener {
 		}
 	}
 
-	/** First document text after (re)load — mirrors the reference's `buildFromScratch()`. */
+	/**
+	 * M4 settings (plan §9): caches every incoming config, but only
+	 * `writeDebounceMs` is applied to the *running* session — rebuilding
+	 * `scheduleWrite` with the new delay. If a write happens to already be
+	 * pending under the old delay, this simply drops it: the debounce
+	 * wrapper is a fresh closure with its own timer, so any in-flight
+	 * timeout on the old one is orphaned (harmless — it holds no state
+	 * `writeNow` needs beyond what's already in `this.data`, and the new
+	 * wrapper still fires on the very next mutation) rather than
+	 * hand-migrating a live timer for a settings change this rare.
+	 * `layoutMode`/`headingDepth`/`animationNodeThreshold` are read only
+	 * from `this.config` at `buildFromScratch` time — see that method and
+	 * DECISIONS.md's dated "M4 settings" entry.
+	 */
+	private applyConfig(config: MindMapWebviewConfig): void {
+		const writeDebounceChanged = config.writeDebounceMs !== this.config.writeDebounceMs;
+		this.config = config;
+		if (writeDebounceChanged) this.scheduleWrite = debounce(() => this.writeNow(), this.config.writeDebounceMs);
+	}
+
+	/**
+	 * R18: the renderer calls this synchronously, once per mounted node
+	 * that has an image embed, every time it (re)draws that node's image
+	 * (see `SvgRenderer.upsertNodeImage`) — it must never itself block on
+	 * the host, so an unresolved target returns `null` (the renderer's own
+	 * placeholder/missing-glyph state) while a "resolveImage" round trip
+	 * runs in the background; `onImageResolved` below re-runs the
+	 * renderer's dirty-tracked `update()` once the answer arrives, which
+	 * calls back in here and (this time) hits the now-populated cache.
+	 *
+	 * A remote URL resolves synchronously to itself — no host round trip,
+	 * same reasoning as `openLink`'s scheme split. Only ever called for a
+	 * node the renderer has actually culled *in* (plan §8's "resolution
+	 * becomes async but only for culled-in nodes, preserving the lazy-load
+	 * design" — this file never calls it directly, it's purely reactive to
+	 * whatever `SvgRenderer` itself decides to draw).
+	 */
+	private resolveImageUrl(node: MindNode): string | null {
+		const embed = getImageEmbed(node.text);
+		if (!embed) return null;
+		if (URL_SCHEME_RE.test(embed.target)) return embed.target;
+
+		const key = `${node.id}\0${embed.target}`;
+		if (this.imageCache.has(key)) return this.imageCache.get(key) ?? null;
+		if (!this.imagePending.has(key)) {
+			this.imagePending.add(key);
+			this.vscode.postMessage({ type: "resolveImage", nodeId: node.id, target: embed.target });
+		}
+		return null;
+	}
+
+	private onImageResolved(nodeId: string, target: string, url: string | null): void {
+		const key = `${nodeId}\0${target}`;
+		this.imagePending.delete(key);
+		this.imageCache.set(key, url);
+		// See `refreshResolvedImages`'s own doc comment: a plain `update()`
+		// would not actually re-run the resolver for an unchanged node, so
+		// this schedules a debounced `mount()` instead.
+		this.refreshResolvedImages();
+	}
+
+	/** First document text after (re)load — mirrors the reference's `buildFromScratch()`. Bakes `layoutMode`/`headingDepth`/`animationNodeThreshold` from whatever `this.config` currently holds (see DECISIONS.md's dated "M4 settings" entry for why these three apply only on next open, not live). */
 	private buildFromScratch(text: string): void {
+		this.layoutConfig = { ...DEFAULT_LAYOUT_CONFIG, mode: this.config.layoutMode };
+		this.serializeConfig = { ...DEFAULT_SERIALIZE_CONFIG, headingDepth: this.config.headingDepth };
+
 		const model = parseMindMap(text, this.title);
 		assignMissingColors(model.root);
 		assignMissingSides(model.root);
@@ -192,9 +381,7 @@ class MindMapApp implements ControllerListener {
 		this.lastWrittenText = text;
 
 		this.renderer?.destroy();
-		// Constructor args 2 (animation threshold) keeps its ported default
-		// until M4 settings arrive.
-		this.renderer = new SvgRenderer(this.container, undefined, this.layoutConfig);
+		this.renderer = new SvgRenderer(this.container, this.config.animationNodeThreshold, this.layoutConfig);
 		this.renderer.setNodeClickHandler((id, evt) => {
 			if (evt.ctrlKey || evt.metaKey) this.controller?.toggleSelection(id);
 			else if (evt.shiftKey) this.controller?.selectRange(id);
@@ -206,11 +393,10 @@ class MindMapApp implements ControllerListener {
 		this.renderer.setNodeContextMenuHandler((id, evt) => this.showNodeMenu(id, evt));
 		this.renderer.setLinkClickHandler((kind, target) => this.openLink(kind, target));
 		this.renderer.setImageClickHandler((kind, target) => this.openImage(kind, target));
+		this.renderer.setImageResolver((node) => this.resolveImageUrl(node));
 		this.renderer.setManualMoveHandler((id, pos) => this.controller?.setManualPosition(id, pos));
 		this.renderer.setReorderHandler((id, targetId, position) => this.controller?.moveNode(id, targetId, position));
 		this.renderer.setManualWidthHandler((id, width) => this.controller?.setManualWidth(id, width));
-		// Not wired yet (vs. the reference's buildFromScratch): image
-		// resolution (setImageResolver) — M4 (asWebviewUri round trip).
 		this.renderer.mount(model);
 	}
 
@@ -546,16 +732,22 @@ class MindMapApp implements ControllerListener {
 	}
 
 	/**
-	 * Ctrl/Cmd+V: reads clipboard text; if it differs from what we last
-	 * wrote ourselves, the user copied something from *outside* this
-	 * extension, so parse it (`parseExternalPaste`) and insert that instead
-	 * of the (stale, in that case) internal clipboard. Text-only for M3 —
-	 * an OS-clipboard *image* (screenshot, browser copy) would need the host
-	 * to write a file into the workspace, which is scoped to M4 alongside
-	 * image display (R18); see the M3 report's scope-escalation.
+	 * Ctrl/Cmd+V: an image on the OS clipboard (screenshot, copied from a
+	 * browser, etc.) takes priority, mirroring the reference's own
+	 * `handlePaste` — see `pasteClipboardImage` below. Otherwise reads
+	 * clipboard text; if it differs from what we last wrote ourselves, the
+	 * user copied something from *outside* this extension, so parse it
+	 * (`parseExternalPaste`) and insert that instead of the (stale, in that
+	 * case) internal clipboard.
 	 */
 	private async handlePaste(): Promise<void> {
 		if (!this.controller) return;
+
+		const embedText = await this.pasteClipboardImage();
+		if (embedText !== null) {
+			this.controller.pasteImageAsChild(embedText);
+			return;
+		}
 
 		let osText: string | null = null;
 		try {
@@ -571,6 +763,68 @@ class MindMapApp implements ControllerListener {
 			}
 		}
 		this.controller.pasteToSelected();
+	}
+
+	/**
+	 * Clipboard-image paste plumbing (moved from M3 into M4, shares its
+	 * host round trip with R18's image *display* work — see PROGRESS.md/
+	 * DECISIONS.md). Mirrors the reference's `pasteClipboardImage`, adapted
+	 * for the webview<->host boundary: a `Blob`/`ArrayBuffer` can't cross
+	 * `postMessage` to the extension host as-is here (there's no shared
+	 * vault object to write through directly, unlike Obsidian's
+	 * `app.vault.createBinary`), so the bytes are base64-encoded and sent
+	 * as a "writeImage" message; the host is supposed to write the file and
+	 * reply with the embed markdown to insert.
+	 *
+	 * Returns `null` if the clipboard has no image (falls through to the
+	 * text-paste path in `handlePaste`, same as the reference), the
+	 * read/encode fails, **or** the host doesn't have a save-location
+	 * policy yet — today, always the last one (see `MindMapEditorProvider.
+	 * ts`'s `writeImage` stub and this file's header comment): the
+	 * round-trip plumbing below is real and tested, but the host always
+	 * answers `embedText: null` until the pasted-image save location is
+	 * decided (escalated, not decided, per the M4 task scope).
+	 */
+	private async pasteClipboardImage(): Promise<string | null> {
+		if (typeof navigator.clipboard?.read !== "function") return null;
+		let items: ClipboardItems;
+		try {
+			items = await navigator.clipboard.read();
+		} catch {
+			return null;
+		}
+		for (const item of items) {
+			const mime = item.types.find((t) => t.startsWith("image/"));
+			if (!mime) continue;
+			try {
+				const blob = await item.getType(mime);
+				const dataBase64 = await MindMapApp.blobToBase64(blob);
+				return await this.requestWriteImage(mime, dataBase64);
+			} catch {
+				return null;
+			}
+		}
+		return null;
+	}
+
+	/** Chunked to avoid blowing the call stack on `String.fromCharCode(...bytes)` for a large screenshot — `btoa` only accepts a plain string, not a typed array. */
+	private static async blobToBase64(blob: Blob): Promise<string> {
+		const bytes = new Uint8Array(await blob.arrayBuffer());
+		const CHUNK = 0x8000;
+		let binary = "";
+		for (let i = 0; i < bytes.length; i += CHUNK) {
+			binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+		}
+		return btoa(binary);
+	}
+
+	/** Posts a "writeImage" request and awaits the matching "imageWritten" reply (matched by a monotonic request id, in case more than one were ever in flight) — see `onHostMessage`'s "imageWritten" handling. */
+	private requestWriteImage(mimeType: string, dataBase64: string): Promise<string | null> {
+		const id = ++this.writeImageRequestId;
+		return new Promise((resolve) => {
+			this.pendingWriteImageResolvers.set(id, resolve);
+			this.vscode.postMessage({ type: "writeImage", id, mimeType, dataBase64 });
+		});
 	}
 
 	// --- Search (R15) ---

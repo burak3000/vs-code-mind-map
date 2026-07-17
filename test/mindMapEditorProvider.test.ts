@@ -12,7 +12,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 interface FakeDocument {
-	uri: { toString(): string };
+	uri: { toString(): string; fsPath: string };
 	fileName: string;
 	version: number;
 	getText(): string;
@@ -21,9 +21,17 @@ interface FakeDocument {
 }
 
 type ChangeListener = (evt: { document: FakeDocument; contentChanges: unknown[] }) => void;
+type ConfigChangeListener = (evt: { affectsConfiguration: (section: string, resource?: unknown) => boolean }) => void;
 
 function makeFakeVscodeModule() {
 	const changeListeners: ChangeListener[] = [];
+	const configChangeListeners: ConfigChangeListener[] = [];
+	// Flat key -> value store for the fake `getConfiguration("mindmapView").get(key, default)` —
+	// tests mutate this directly (via `setConfigValue`) rather than needing a
+	// real settings.json; resource-scoping is not modeled (none of the M4
+	// tests need per-folder overrides), only the section/key/default shape.
+	const configValues = new Map<string, unknown>();
+	let workspaceFolders: { uri: { toString(): string; fsPath: string } }[] | undefined = undefined;
 	const registeredCommands = new Map<string, () => void | Promise<void>>();
 	const showWarningMessage = vi.fn();
 	const showInformationMessage = vi.fn();
@@ -61,6 +69,25 @@ function makeFakeVscodeModule() {
 	});
 
 	const docsByUriString = new Map<string, FakeDocument & { _text: string }>();
+
+	// In-memory fake of `vscode.workspace.fs` for the clipboard-image-paste
+	// write path — keyed by the fake `Uri.file`'s `fsPath`. `stat` throws
+	// (FileNotFound-style) when absent, matching the real API's contract that
+	// MindMapEditorProvider's `fileExists` collision check relies on.
+	const fsFiles = new Map<string, Uint8Array>();
+	const fsDirs = new Set<string>();
+	const fs = {
+		writeFile: vi.fn(async (uri: { fsPath: string }, content: Uint8Array) => {
+			fsFiles.set(uri.fsPath, content);
+		}),
+		createDirectory: vi.fn(async (uri: { fsPath: string }) => {
+			fsDirs.add(uri.fsPath);
+		}),
+		stat: vi.fn(async (uri: { fsPath: string }) => {
+			if (!fsFiles.has(uri.fsPath)) throw new Error("FileNotFound");
+			return { type: 1, size: fsFiles.get(uri.fsPath)!.length };
+		}),
+	};
 
 	/** Simulates a genuine external edit (e.g. typed in a split text editor) — mutates the document directly and fires the change listeners, bypassing applyEdit/WorkspaceEdit entirely (unlike the provider's own write-back path). */
 	function fireExternalChange(doc: FakeDocument & { _text: string }, newText: string): void {
@@ -106,7 +133,24 @@ function makeFakeVscodeModule() {
 						if (i >= 0) changeListeners.splice(i, 1);
 					} };
 				},
+				onDidChangeConfiguration: (listener: ConfigChangeListener) => {
+					configChangeListeners.push(listener);
+					return { dispose: () => {
+						const i = configChangeListeners.indexOf(listener);
+						if (i >= 0) configChangeListeners.splice(i, 1);
+					} };
+				},
+				getConfiguration: (section: string, _resource?: unknown) => ({
+					get: <T,>(key: string, defaultValue: T): T => {
+						const full = `${section}.${key}`;
+						return configValues.has(full) ? (configValues.get(full) as T) : defaultValue;
+					},
+				}),
+				get workspaceFolders() {
+					return workspaceFolders;
+				},
 				applyEdit,
+				fs,
 			},
 			window: {
 				registerCustomEditorProvider: vi.fn((_viewType: string, provider: unknown, _opts: unknown) => {
@@ -143,6 +187,22 @@ function makeFakeVscodeModule() {
 			activeTextEditorHolder.current = editor;
 		},
 		getRegisteredProvider: () => registeredProvider,
+		setConfigValue: (section: string, key: string, value: unknown) => configValues.set(`${section}.${key}`, value),
+		clearConfigValues: () => configValues.clear(),
+		fireConfigChange: (affects = true) => configChangeListeners.forEach((l) => l({ affectsConfiguration: () => affects })),
+		setWorkspaceFolders: (folders: string[] | undefined) => {
+			workspaceFolders = folders?.map((fsPath) => ({ uri: { toString: () => `file://${fsPath}`, fsPath } }));
+		},
+		fs,
+		fsFiles,
+		fsDirs,
+		resetFs: () => {
+			fsFiles.clear();
+			fsDirs.clear();
+			fs.writeFile.mockClear();
+			fs.createDirectory.mockClear();
+			fs.stat.mockClear();
+		},
 	};
 }
 
@@ -153,8 +213,9 @@ const fakeVscode = makeFakeVscodeModule();
 vi.mock("vscode", () => fakeVscode.module);
 
 function makeFakeDocument(text: string, uriStr = "file:///fixture.md") {
+	const fsPath = uriStr.replace(/^file:\/\//, "");
 	const doc: FakeDocument & { _text: string } = {
-		uri: { toString: () => uriStr },
+		uri: { toString: () => uriStr, fsPath },
 		fileName: "fixture.md",
 		version: 1,
 		_text: text,
@@ -181,7 +242,11 @@ function makeFakeWebviewPanel() {
 			html: "",
 			cspSource: "vscode-webview://fake",
 			postMessage: vi.fn(async (_msg: unknown) => true),
-			asWebviewUri: (uri: { toString(): string }) => uri,
+			// Wraps (rather than passing through) so tests can tell "went
+			// through asWebviewUri" apart from "still a raw file:// string" —
+			// real VS Code rewrites the scheme/host entirely; this fake just
+			// needs to be a distinguishable, reversible transform.
+			asWebviewUri: (uri: { toString(): string }) => ({ toString: () => `vscode-webview-resource://fake${uri.toString().replace(/^file:\/\//, "")}` }),
 			onDidReceiveMessage: (handler: (msg: unknown) => void) => {
 				messageHandler = handler;
 				return { dispose: () => {} };
@@ -208,6 +273,9 @@ describe("MindMapEditorProvider (host)", () => {
 		fakeVscode.openExternal.mockClear();
 		fakeVscode.executeCommand.mockClear();
 		fakeVscode.setActiveTextEditor(undefined);
+		fakeVscode.clearConfigValues();
+		fakeVscode.setWorkspaceFolders(undefined);
+		fakeVscode.resetFs();
 		({ MindMapEditorProvider } = await import("../src/MindMapEditorProvider"));
 	});
 
@@ -437,5 +505,177 @@ describe("MindMapEditorProvider (host)", () => {
 
 		await fakeVscode.registeredCommands.get("mindmapView.toggleToMindMap")!();
 		expect(fakeVscode.executeCommand).not.toHaveBeenCalled();
+	});
+
+	// --- M4: localResourceRoots widening (R18) ---
+
+	it("widens localResourceRoots beyond media/ to cover every workspace folder and the document's own directory", async () => {
+		const provider = register();
+		fakeVscode.setWorkspaceFolders(["/workspace/one", "/workspace/two"]);
+		const document = makeFakeDocument("# Root\n", "file:///workspace/one/notes/fixture.md");
+		const panel = makeFakeWebviewPanel();
+
+		await provider.resolveCustomTextEditor(document as unknown as import("vscode").TextDocument, panel as unknown as import("vscode").WebviewPanel, {} as import("vscode").CancellationToken);
+
+		const roots = (panel.webview.options as { localResourceRoots: { toString(): string }[] }).localResourceRoots;
+		const rootStrings = roots.map((r) => r.toString());
+		expect(rootStrings).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining("/media"), // still there — the bundle/CSS themselves
+				"file:///workspace/one",
+				"file:///workspace/two",
+				"file:///workspace/one/notes", // the document's own directory
+			])
+		);
+	});
+
+	it("widens localResourceRoots to just the document's own directory when there is no workspace folder (a loose file)", async () => {
+		const provider = register();
+		fakeVscode.setWorkspaceFolders(undefined);
+		const document = makeFakeDocument("# Root\n", "file:///loose/notes/fixture.md");
+		const panel = makeFakeWebviewPanel();
+
+		await provider.resolveCustomTextEditor(document as unknown as import("vscode").TextDocument, panel as unknown as import("vscode").WebviewPanel, {} as import("vscode").CancellationToken);
+
+		const roots = (panel.webview.options as { localResourceRoots: { toString(): string }[] }).localResourceRoots;
+		expect(roots.map((r) => r.toString())).toEqual(expect.arrayContaining(["file:///loose/notes"]));
+	});
+
+	// --- M4: image resolution (R18) round trip ---
+
+	it("resolveImage: resolves a node's image embed target relative to the document's directory and replies via asWebviewUri", async () => {
+		const provider = register();
+		const panel = makeFakeWebviewPanel();
+		const document = makeFakeDocument("# Root\n", "file:///workspace/notes/fixture.md");
+		await provider.resolveCustomTextEditor(document as unknown as import("vscode").TextDocument, panel as unknown as import("vscode").WebviewPanel, {} as import("vscode").CancellationToken);
+		(panel.webview.postMessage as ReturnType<typeof vi.fn>).mockClear();
+
+		panel.sendFromWebview({ type: "resolveImage", nodeId: "node-1", target: "images/diagram.png" });
+
+		await vi.waitFor(() => expect(panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "imageResolved" })));
+		const call = (panel.webview.postMessage as ReturnType<typeof vi.fn>).mock.calls.find((c) => (c[0] as { type?: string }).type === "imageResolved")!;
+		const msg = call[0] as { nodeId: string; target: string; url: string };
+		expect(msg.nodeId).toBe("node-1");
+		expect(msg.target).toBe("images/diagram.png");
+		// Resolved relative to the *document's* directory, then run through
+		// asWebviewUri (the fake wraps with a "vscode-webview-resource://fake"
+		// prefix — see makeFakeWebviewPanel) — not left as a bare file path.
+		expect(msg.url).toBe("vscode-webview-resource://fake/workspace/notes/images/diagram.png");
+	});
+
+	it("writeImage: writes the pasted image beside the document by default and replies with a relative markdown embed", async () => {
+		const provider = register();
+		const panel = makeFakeWebviewPanel();
+		const document = makeFakeDocument("# Root\n", "file:///workspace/notes/fixture.md");
+		await provider.resolveCustomTextEditor(document as unknown as import("vscode").TextDocument, panel as unknown as import("vscode").WebviewPanel, {} as import("vscode").CancellationToken);
+		(panel.webview.postMessage as ReturnType<typeof vi.fn>).mockClear();
+
+		const dataBase64 = Buffer.from("PNGBYTES").toString("base64");
+		panel.sendFromWebview({ type: "writeImage", id: 7, mimeType: "image/png", dataBase64 });
+
+		await vi.waitFor(() => expect(panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "imageWritten", id: 7 })));
+		const reply = (panel.webview.postMessage as ReturnType<typeof vi.fn>).mock.calls.find((c) => (c[0] as { type?: string }).type === "imageWritten")![0] as { embedText: string };
+		// Default pastedImageFolder "" -> filename only, no subfolder; valid
+		// CommonMark ![](…) with a hyphenated (space-free) name.
+		expect(reply.embedText).toMatch(/^!\[\]\(pasted-image-\d{14}\.png\)$/);
+
+		// The file was actually written, beside the document, with the decoded bytes.
+		const written = [...fakeVscode.fsFiles.entries()];
+		expect(written).toHaveLength(1);
+		const [writtenPath, bytes] = written[0];
+		expect(writtenPath).toMatch(/^\/workspace\/notes\/pasted-image-\d{14}\.png$/);
+		expect(Buffer.from(bytes).toString()).toBe("PNGBYTES");
+	});
+
+	it("writeImage: honors the pastedImageFolder setting and normalizes the embed path to forward slashes", async () => {
+		const provider = register();
+		fakeVscode.setConfigValue("mindmapView", "pastedImageFolder", "assets");
+		const panel = makeFakeWebviewPanel();
+		const document = makeFakeDocument("# Root\n", "file:///workspace/notes/fixture.md");
+		await provider.resolveCustomTextEditor(document as unknown as import("vscode").TextDocument, panel as unknown as import("vscode").WebviewPanel, {} as import("vscode").CancellationToken);
+		(panel.webview.postMessage as ReturnType<typeof vi.fn>).mockClear();
+
+		panel.sendFromWebview({ type: "writeImage", id: 3, mimeType: "image/jpeg", dataBase64: Buffer.from("x").toString("base64") });
+
+		await vi.waitFor(() => expect(panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "imageWritten", id: 3 })));
+		const reply = (panel.webview.postMessage as ReturnType<typeof vi.fn>).mock.calls.find((c) => (c[0] as { type?: string }).type === "imageWritten")![0] as { embedText: string };
+		// jpeg subtype -> "jpg" extension; subfolder prefixed with a forward slash.
+		expect(reply.embedText).toMatch(/^!\[\]\(assets\/pasted-image-\d{14}\.jpg\)$/);
+		expect(fakeVscode.fs.createDirectory).toHaveBeenCalled();
+		expect([...fakeVscode.fsFiles.keys()][0]).toMatch(/^\/workspace\/notes\/assets\/pasted-image-\d{14}\.jpg$/);
+	});
+
+	it("writeImage: replies embedText null when the write fails (falls through to text-paste), never throwing", async () => {
+		const provider = register();
+		fakeVscode.fs.writeFile.mockRejectedValueOnce(new Error("EACCES"));
+		const panel = makeFakeWebviewPanel();
+		const document = makeFakeDocument("# Root\n", "file:///workspace/notes/fixture.md");
+		await provider.resolveCustomTextEditor(document as unknown as import("vscode").TextDocument, panel as unknown as import("vscode").WebviewPanel, {} as import("vscode").CancellationToken);
+		(panel.webview.postMessage as ReturnType<typeof vi.fn>).mockClear();
+
+		panel.sendFromWebview({ type: "writeImage", id: 9, mimeType: "image/png", dataBase64: Buffer.from("x").toString("base64") });
+
+		await vi.waitFor(() => expect(panel.webview.postMessage).toHaveBeenCalledWith({ type: "imageWritten", id: 9, embedText: null }));
+	});
+
+	// --- M4: settings (contributes.configuration) ---
+
+	it("posts a setConfig message (read from workspace.getConfiguration) before the first setDocument", async () => {
+		const provider = register();
+		fakeVscode.setConfigValue("mindmapView", "headingDepth", 2);
+		fakeVscode.setConfigValue("mindmapView", "layoutMode", "left-only");
+		const panel = makeFakeWebviewPanel();
+		const document = makeFakeDocument("# Root\n");
+
+		await provider.resolveCustomTextEditor(document as unknown as import("vscode").TextDocument, panel as unknown as import("vscode").WebviewPanel, {} as import("vscode").CancellationToken);
+
+		expect(panel.webview.postMessage).toHaveBeenCalledWith({
+			type: "setConfig",
+			config: { writeDebounceMs: 400, animationNodeThreshold: 500, headingDepth: 2, layoutMode: "left-only" },
+		});
+
+		// Order matters: setConfig must have gone out before the "ready"
+		// handshake's setDocument, so the webview bakes the right values.
+		const calls = (panel.webview.postMessage as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[0] as { type?: string }).type);
+		panel.sendFromWebview({ type: "ready" });
+		const readyIdx = (panel.webview.postMessage as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[0] as { type?: string }).type).indexOf("setDocument");
+		expect(calls.indexOf("setConfig")).toBeLessThan(readyIdx === -1 ? Infinity : readyIdx + 1);
+	});
+
+	it("posts a fresh setConfig to the panel when a relevant onDidChangeConfiguration fires, and ignores an irrelevant one", async () => {
+		const provider = register();
+		const panel = makeFakeWebviewPanel();
+		const document = makeFakeDocument("# Root\n");
+		await provider.resolveCustomTextEditor(document as unknown as import("vscode").TextDocument, panel as unknown as import("vscode").WebviewPanel, {} as import("vscode").CancellationToken);
+		(panel.webview.postMessage as ReturnType<typeof vi.fn>).mockClear();
+
+		fakeVscode.fireConfigChange(false); // an unrelated section changed
+		expect(panel.webview.postMessage).not.toHaveBeenCalled();
+
+		fakeVscode.setConfigValue("mindmapView", "writeDebounceMs", 900);
+		fakeVscode.fireConfigChange(true);
+		expect(panel.webview.postMessage).toHaveBeenCalledWith({
+			type: "setConfig",
+			config: { writeDebounceMs: 900, animationNodeThreshold: 500, headingDepth: 1, layoutMode: "balanced" },
+		});
+	});
+
+	it("applies a changed externalEditForwardDebounceMs to the next external edit without restarting the panel", async () => {
+		vi.useFakeTimers();
+		try {
+			const provider = register();
+			fakeVscode.setConfigValue("mindmapView", "externalEditForwardDebounceMs", 50);
+			const panel = makeFakeWebviewPanel();
+			const document = makeFakeDocument("# Root\n");
+			await provider.resolveCustomTextEditor(document as unknown as import("vscode").TextDocument, panel as unknown as import("vscode").WebviewPanel, {} as import("vscode").CancellationToken);
+			panel.sendFromWebview({ type: "ready" });
+			(panel.webview.postMessage as ReturnType<typeof vi.fn>).mockClear();
+
+			fakeVscode.fireExternalChange(document, "# Root\n## Edited elsewhere\n");
+			await vi.advanceTimersByTimeAsync(50);
+			expect(panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "setDocument", text: "# Root\n## Edited elsewhere\n" }));
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

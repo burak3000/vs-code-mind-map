@@ -8,7 +8,7 @@ Implementation is done by a Sonnet 5 agent, milestone by milestone, with a
 review gate after each milestone; performance trade-offs are decided by the
 user, never by the agent (rule 3).
 
-_Last updated: 2026-07-17 (M3 completed — both design forks resolved by the user; benchmarks re-run clean on an idle window, all within budget)._
+_Last updated: 2026-07-17 (M4 completed — images, `--vscode-*` theming, settings, and clipboard image paste; benchmarks clean on an idle window, all within budget)._
 
 ## Milestone status
 
@@ -18,8 +18,8 @@ _Last updated: 2026-07-17 (M3 completed — both design forks resolved by the us
 | M1 | Read-only map in the webview (bootstrap, document bridge, pan/zoom, selection) | **Done** |
 | M2 | Editing + bidirectional sync + keybinding plumbing | **Done** |
 | M3 | Full feature parity (folding, links, manual positioning, search, context menu, multi-select/clipboard, Ctrl/Cmd+M toggle) | **Done** (both escalations resolved; benchmarks re-run clean on an idle window, all within budget) |
-| M4 | Images (display **+ clipboard image paste, moved from M3**), VS Code theming (`--vscode-*` vars), settings (`contributes.configuration`) | Pending |
-| M5 | Hardening (5k stress, webview lifecycle, workspace trust), packaging (`vsce`), release readiness | Pending |
+| M4 | Images (display **+ clipboard image paste, moved from M3**), VS Code theming (`--vscode-*` vars), settings (`contributes.configuration`) | **Done** (one escalation — pasted-image save location — resolved by the user; benchmarks clean on an idle window, all within budget) |
+| M5 | Hardening (5k stress, webview lifecycle, workspace trust), packaging (`vsce`), release readiness | Pending — the only milestone left |
 
 ## M0 — done
 
@@ -217,6 +217,52 @@ commands register inside `MindMapEditorProvider.register()`), `package.json`,
    it isn't built twice. No image-save path was added in M3. See
    DECISIONS.md; tracked in M4's row above.
 
+## M4 — done
+
+Built by the M4 Sonnet agent, which completed the bulk (theming, settings,
+image display, clipboard-paste plumbing) then hit the account session limit
+mid-writeup; the coordinator finished the remaining piece (the pasted-image
+write path, once the user decided the save location), the doc updates, and
+the clean-window benchmark run.
+
+- **Theming (R-theming):** `media/mindmap.css` now references only
+  `--vscode-*` theme variables (VS Code injects them + a theme body class
+  and live-updates both on a theme switch, so no code/message channel was
+  needed). The 8 per-branch color slots map to `--vscode-charts-*` /
+  `--vscode-terminal-ansi*` — **high-contrast passes by construction**
+  (see DECISIONS.md); the one human-eyeball item left is per-theme hue
+  *identity*, which now varies with each theme's chart colors.
+- **Settings (`contributes.configuration`):** five settings —
+  `writeDebounceMs`, `externalEditForwardDebounceMs` (both live),
+  `animationNodeThreshold`/`headingDepth`/`layoutMode` (next-open, a
+  deliberate per-setting split, see DECISIONS.md), and the new
+  `pastedImageFolder`. Host reads resource-scoped config, posts on resolve
+  and on `onDidChangeConfiguration`.
+- **Images (R18):** `setImageResolver` wired as an async host round trip
+  (webview posts `resolveImage` for a culled-in node → host resolves
+  relative to the doc dir, `asWebviewUri`, posts back) — viewport-bounded,
+  off the keystroke path, preserving the lazy-load design.
+  `localResourceRoots` widened beyond `media/` to the workspace folder(s)
+  + the document's dir (noted in DECISIONS.md).
+- **Clipboard image paste (moved from M3):** end-to-end. The one open
+  escalation — where pasted images are saved — was **resolved by the
+  user**: a `mindmapView.pastedImageFolder` setting, default `""` =
+  alongside the document. Host `writeImage` decodes the base64 bytes,
+  writes `pasted-image-<timestamp>.<ext>` (hyphenated for clean CommonMark,
+  collision-suffixed), creates the folder if needed, and returns a
+  `![](relative/path)` embed that round-trips through the same resolver as
+  display. Failures fall through to text-paste — never a crash. See
+  DECISIONS.md.
+- **Tests: 368 passed / 0 skipped** (30 files) — new `theming.test.ts`,
+  `webviewConfig.test.ts`, and image-resolve + clipboard-image-write cases
+  (default folder, `pastedImageFolder` subfolder, write-failure fallthrough)
+  in `mindMapEditorProvider.test.ts`.
+- **Benchmarks (clean idle window):** `bench:images` open 51.4ms (budget
+  1000ms); `bench:m2`/`bench:open` match the M2/M3 baseline within noise —
+  no regression (ported core still byte-identical, `diff -rq` clean).
+  Bundle ~15.6% of the 500KB budget, no new dependency. See benchmarks.md.
+- **Not committed** — left for the user.
+
 ## Decisions taken so far
 
 | Decision | Outcome | Where |
@@ -234,20 +280,22 @@ commands register inside `MindMapEditorProvider.register()`), `package.json`,
 | `.vscode/launch.json`/`tasks.json` | Added; no auto pre-launch build task (risk of a broken F5 outweighed the convenience — see DECISIONS.md) | M3; DECISIONS.md |
 | "Go to note section" open semantics | **User decided:** open the document as a text editor in the column beside the map at the target line; map tab stays open | M3; DECISIONS.md |
 | Clipboard image paste scope (M3 vs. M4) | **User decided:** defer to M4 (shares plumbing with M4 image display); M3 ships text-only paste | M3→M4; DECISIONS.md |
+| M4 theming + high-contrast palette | Pure CSS on `--vscode-*`; the 8 branch slots map to `--vscode-charts-*`/`--vscode-terminal-ansi*`, so HC passes by construction (agent resolved, not escalated) | M4; DECISIONS.md |
+| M4 settings live-vs-next-open split | Two debounces live; layoutMode/headingDepth/animationNodeThreshold next-open (deliberate per-setting, carried over from reference) | M4; DECISIONS.md |
+| `localResourceRoots` widened for images | Extended beyond `media/` to workspace folders + the document's dir so `asWebviewUri` can serve workspace images (security implication noted) | M4; DECISIONS.md |
+| Pasted-image save location | **User decided:** `mindmapView.pastedImageFolder` setting, default `""` = alongside the document; `![](relative/path)` embed | M4; DECISIONS.md |
 
 ## Open decisions expected ahead
 
 - Write-back edit granularity (full replace vs minimal ranges, trade-off
   #10) — measured in M2, not budget-relevant; only revisit if a real
-  split-view window (M2/M5 human check) shows the text editor's
+  split-view window (M5 human check) shows the text editor's
   viewport/decorations misbehaving on every map edit.
 - `retainContextWhenHidden` final call (M5).
 - Any SVG-limit / animation-threshold questions if the 5k stress test in a
   real window (M5) surfaces them.
-- (M3's two escalations are now resolved — see the resolved-escalations
-  section above; the idle-machine benchmark re-run is done and M3's budget
-  sign-off is complete.)
-- Clipboard image paste (moved from M3 into M4 by user decision).
+- (All M3 and M4 escalations are resolved — see the sections above. No open
+  decisions remain before M5.)
 
 ## Remaining for human (accumulating)
 
@@ -259,11 +307,13 @@ With → Mind Map in an Extension Development Host, check open latency,
 60 fps pan/zoom, Tab/Enter/F2/Delete/arrows/Escape feel instant, Ctrl/
 Cmd+Z/Shift+Z/Y actually reach the mind map (not VS Code's own no-op
 undo), split-view edit propagation both directions, the external-edit-
-during-pending-write warning notice, 5k graceful degradation. The map
-renders unthemed until M4's `--vscode-*` variable swap (functional, not
-pretty, by design). M3 adds its own checklist in `benchmarks.md`'s M3
-section (folding-twice, drag interactions, links, search, context menu,
-clipboard, Ctrl/Cmd+M both directions). The headless benchmark sign-off
-is complete (clean idle-window re-run, all within budget — see
-`benchmarks.md`); the F5 real-window pass remains the one
-paint/frame-rate check no headless run can substitute for.
+during-pending-write warning notice, 5k graceful degradation. M3 and M4
+each add their own checklist in `benchmarks.md` (M3: folding-twice, drag
+interactions, links, search, context menu, clipboard, Ctrl/Cmd+M both
+directions; M4: theming on light/dark/both-HC, image thumbnails, each
+setting taking effect, clipboard image paste). As of M4 the map is themed
+against `--vscode-*` variables — it should now look like a native VS Code
+editor, not unstyled DOM. The headless + idle-window benchmark sign-off is
+complete for every milestone through M4 (all within budget — see
+`benchmarks.md`); the F5 real-window pass remains the one paint/frame-rate
+check no headless run can substitute for, and is the substance of M5.
