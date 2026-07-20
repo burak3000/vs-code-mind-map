@@ -44,6 +44,8 @@ export function collectMeta(node: MindNode, out: Record<string, NodeMeta>): void
 			folded: node.folded || undefined,
 			pos: node.manualPos ? [node.manualPos.x, node.manualPos.y] : undefined,
 			width: node.manualWidth,
+			externalRef: node.externalRelationTarget || undefined,
+			badge: node.statusBadge,
 		};
 	}
 	for (const child of node.children) collectMeta(child, out);

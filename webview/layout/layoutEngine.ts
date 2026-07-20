@@ -236,7 +236,17 @@ function layoutSide(autoChildren: MindNode[], cfg: LayoutConfig, side: "L" | "R"
 		// to leave the inner edge fixed and grow the box back toward the
 		// parent instead of away from it).
 		const x = side === "L" ? anchorX - depthAxis - w : anchorX + depthAxis;
-		node.layout = { x, y: n.x + anchorY, w, h: box.h, side };
+		// `n.x` is the *center* of the node's breadth-axis footprint (flextree's
+		// own `left`/`right` accessors are `x ± xSize/2`), and the box sits
+		// centered within that footprint (footprint size is box.h + siblingGap,
+		// padded symmetrically). `layout.y` everywhere else in the codebase is
+		// the box's *top* edge, so it must be converted here — using the center
+		// directly only happened to work when every sibling shared the same
+		// height (the box.h/2 offset was then a constant that cancelled out);
+		// once heights differ (wrapped multi-line text, an image thumbnail),
+		// using the center as the top edge shifts taller/shorter siblings into
+		// overlapping each other.
+		node.layout = { x, y: n.x - box.h / 2 + anchorY, w, h: box.h, side };
 	});
 
 	// Manually-positioned nodes nested anywhere within this auto-laid-out

@@ -187,6 +187,7 @@
 		"bench:open": "node scripts/bench-open.mjs",
 		"bench:m2": "node scripts/bench-m2.mjs",
 		"bench:images": "node scripts/bench-images.mjs",
+		"bench:relations": "node scripts/bench-relations.mjs",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"package": "npm run build && npx @vscode/vsce package --no-rewrite-relative-links"

@@ -746,3 +746,67 @@ item where this list already covers the same ground):
    secondary check — confirmed *not* fully supported by design (`"limited"`
    — see DECISIONS.md), so the useful check there is that the core
    open/edit story still works, not that every feature does.
+
+## Phase A — catch-up re-sync of the platform-free core (relations, status badges, layout fix)
+
+The reference plugin gained node relations, status badges, and a
+tall-node-overlap layout fix after this repo's M0 port point; Phase A
+brings the platform-free core current with all of it (DECISIONS.md has the
+full entry). No VS Code-side UI wiring yet — the new features are dormant
+(rendering paths exist but nothing in `webview/main.ts` calls
+`resolveRelations` or sets a `statusBadge`, so the relations layer stays
+empty and no node ever carries a status badge, regardless of
+`showRelations`'s `true` default).
+
+### Core-integrity re-verification
+
+`model/`, `layout/`, `sync/`, `controller/` — byte-identical to reference
+HEAD (`diff -rq`, zero diffs), same as every milestone. `render/` — differs
+from reference HEAD *only* by the authorized `getViewport`/`setViewport`
+pair (`diff -u`: 26 added, 0 removed) — re-confirmed after the full-file
+re-copy, so the ongoing verification convention ("render/ differs only by
+that pair," not "clean") still holds. `webview/ui/InlineEditor.ts` (ported
+outside the protected core back at M1) is back to fully byte-identical —
+reference's own `reposition()` addition (F3, keeps the inline editor glued
+to its node across pan/zoom) came along in the re-copy; it's dormant too
+(not called from `webview/main.ts` yet).
+
+### `npm run bench:relations` (new)
+
+```
+2000 nodes, 200 relations: open(parse+layout=18.8ms resolve=1.0ms mount=5.0ms
+total=30.7ms OK) Tab=14.9ms OK rename(relation source)=13.6ms OK
+pan-dispatch=3.3ms serialize=1.2ms
+  round-trip check: serialized text contains all 200 relation links: true
+5000 nodes, 500 relations: open(parse+layout=35.6ms resolve=1.6ms mount=2.8ms
+total=40.8ms OK) Tab=27.4ms OK rename(relation source)=30.2ms OK
+pan-dispatch=0.2ms serialize=1.4ms
+  round-trip check: serialized text contains all 500 relation links: true
+```
+
+Both fixtures comfortably inside the open budget (30.7ms/1000ms and
+40.8ms/2000ms respectively). This is a *ported-core* baseline, not yet a
+measurement of real usage — relations aren't wired to run on every
+`onChange` until Phase B/C, at which point `resolveRelations`'s per-node
+work and relation-arrow rendering become a real per-edit cost worth
+re-measuring against budget (flagged, not skipped).
+
+### Test suite
+
+**479 passed / 0 skipped** (36 files, up from 374/30) — new:
+`relations.test.ts`, `relationsRenderer.test.ts`, `foreignRelation.test.ts`,
+`statusBadgePersistence.test.ts`, `ensureVisible.test.ts`,
+`test/helpers/{model,render}.ts` (shared scaffolding); updated:
+`metadata/controller/serializer/colors/layout/manualPosition/
+renderer.smoke/links/inlineEditor/webviewBootstrap.test.ts` (the last one
+for a legitimate upstream link-click-semantics change — plain click now
+selects, Ctrl/Cmd+click opens the link — see DECISIONS.md).
+
+### REMAINING FOR HUMAN — Phase A
+
+Nothing new to check in a real window yet (everything new is dormant/
+render-only) beyond re-confirming the existing checklist above still holds
+— the re-synced code is a superset of what was there, verified via the
+same headless suite. Phase B (status badges wiring) and Phase C (relations
+wiring) will each add their own real-window checklist once there's
+something interactive to click.

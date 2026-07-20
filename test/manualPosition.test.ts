@@ -38,9 +38,11 @@ describe("computeLayout with manualPos (R12)", () => {
 		a.manualPos = { x: 999, y: 999 };
 
 		computeLayout(model.root);
-		// B is the only auto-managed child now; it should land exactly at the
-		// root's own depth-axis offset (no other sibling to share space with).
-		expect(b.layout!.y).toBe(0);
+		// B is the only auto-managed child now, so it shouldn't be pushed off
+		// the root's own breadth-axis line by any sibling — its *center*
+		// (not its top edge, which shifts with box height) should land
+		// exactly on that line, since there's no one else to share space with.
+		expect(b.layout!.y + b.layout!.h / 2).toBe(0);
 	});
 
 	it("lays out a pinned node's own auto children relative to its pin, not the true root", () => {

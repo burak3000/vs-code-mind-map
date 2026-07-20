@@ -61,10 +61,12 @@ describe("serializeSubtree (plan item 06: tree copy to OS clipboard)", () => {
 		const branchA = model.root.children[0];
 		branchA.folded = true; // would normally earn a ^blockid suffix on serializeMindMap
 		branchA.manualPos = { x: 10, y: 20 };
+		branchA.statusBadge = "done";
 
 		const text = serializeSubtree(branchA);
 		expect(text).not.toContain("^");
 		expect(text).not.toContain("pos:");
+		expect(text).not.toContain("badge:");
 		expect(text).toBe(["- Branch A", "  - a"].join("\n"));
 	});
 

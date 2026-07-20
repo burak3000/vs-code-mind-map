@@ -101,7 +101,7 @@ function siblingInDirection(node: MindNode, direction: "up" | "down"): MindNode 
 /**
  * Structural, tree-aware arrow navigation (R-arrow-keys): follows
  * parent/child/sibling relationships instead of a pure geometric scan, so
- * arrows behave like XMind rather than occasionally jumping into a cousin
+ * arrows behave like a traditional desktop mind-mapper rather than occasionally jumping into a cousin
  * branch or across the root. `findNearestInDirection` remains the fallback
  * for manually-positioned nodes and for walking up/down across a sibling
  * group's edge without crossing to the other side of the root.

@@ -98,6 +98,13 @@ export function setFolded(model: MindMapModel, nodeId: string, folded: boolean):
 	model.version += 1;
 }
 
+export function setStatusBadge(model: MindMapModel, nodeId: string, badge: string | undefined): void {
+	const node = model.byId.get(nodeId);
+	if (!node) throw new Error(`setStatusBadge: unknown node id ${nodeId}`);
+	node.statusBadge = badge;
+	model.version += 1;
+}
+
 /** Pins a node to an absolute position, excluding it from auto-balance layout (R12). */
 export function setManualPosition(model: MindMapModel, nodeId: string, pos: { x: number; y: number }): void {
 	const node = model.byId.get(nodeId);
@@ -178,7 +185,14 @@ export function moveNode(model: MindMapModel, nodeId: string, newParentId: strin
  * Detached (`parent: null`) — caller inserts it with `insertSubtree`.
  * Drops `manualPos`/`branchSide`: those are meaningful only at the original's
  * specific position in the tree and would misplace/overlap once pasted
- * elsewhere.
+ * elsewhere. Also drops `colorKey` (F1): it's only meaningful on a direct
+ * child of root, and the clone's eventual position (root-level vs. nested
+ * inside another branch) isn't known yet here — `assignMissingColors` gives
+ * it a fresh slot or lets it inherit its new parent branch's color once
+ * inserted, instead of carrying a stale copy of the original's color that
+ * would shadow the target branch's. Belt-and-suspenders with
+ * `assignMissingColors`'s own invariant enforcement: this keeps the clone
+ * clean from the instant it's created, before the next `onChange` even runs.
  */
 export function cloneSubtree(node: MindNode): MindNode {
 	const clone: MindNode = {
@@ -188,8 +202,8 @@ export function cloneSubtree(node: MindNode): MindNode {
 		parent: null,
 		depth: node.depth,
 		folded: node.folded,
-		colorKey: node.colorKey,
 		manualWidth: node.manualWidth,
+		statusBadge: node.statusBadge,
 		subtreeCount: 0,
 		attachedContent: node.attachedContent ? [...node.attachedContent] : undefined,
 	};

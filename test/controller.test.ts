@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseMindMap } from "../webview/sync/parser";
 import { Controller } from "../webview/controller/Controller";
+import { assignMissingColors, resolveNodeColorKey } from "../webview/render/colors";
 
 function makeController(md = "# Root\n## Branch A\n- a\n## Branch B\n") {
 	const model = parseMindMap(md, "fallback");
@@ -85,13 +86,6 @@ describe("Controller", () => {
 		expect(controller.model.byId.get(childA.id)).toBe(childA);
 	});
 
-	it("deleteSelected cannot delete the root", () => {
-		const controller = makeController();
-		controller.select(controller.model.root.id);
-		controller.deleteSelected();
-		expect(controller.model.byId.has(controller.model.root.id)).toBe(true);
-	});
-
 	it("delete + undo restores correct subtreeCount along the ancestor chain", () => {
 		const controller = makeController();
 		const branchA = controller.model.root.children[0];
@@ -127,6 +121,50 @@ describe("Controller", () => {
 		const leaf = controller.model.root.children[0].children[0]; // "a", childless
 		controller.toggleFold(leaf.id);
 		expect(leaf.folded).toBe(false);
+	});
+
+	it("setStatusBadge sets and clears a node's status, and is undoable/redoable", () => {
+		const controller = makeController();
+		const branchA = controller.model.root.children[0];
+		expect(branchA.statusBadge).toBeUndefined();
+
+		controller.setStatusBadge(branchA.id, "done");
+		expect(branchA.statusBadge).toBe("done");
+
+		controller.setStatusBadge(branchA.id, "blocked");
+		expect(branchA.statusBadge).toBe("blocked");
+
+		controller.undo();
+		expect(branchA.statusBadge).toBe("done");
+
+		controller.undo();
+		expect(branchA.statusBadge).toBeUndefined();
+
+		controller.redo();
+		expect(branchA.statusBadge).toBe("done");
+
+		controller.setStatusBadge(branchA.id, undefined);
+		expect(branchA.statusBadge).toBeUndefined();
+	});
+
+	it("setStatusBadge is a no-op on an unknown node id", () => {
+		const controller = makeController();
+		expect(() => controller.setStatusBadge("nonexistent", "done")).not.toThrow();
+	});
+
+	it("toggleStatusBadge sets the badge if unset/different, clears it if already set (Cmd+Shift+D -> \"done\")", () => {
+		const controller = makeController();
+		const branchA = controller.model.root.children[0];
+
+		controller.toggleStatusBadge(branchA.id, "done");
+		expect(branchA.statusBadge).toBe("done");
+
+		controller.toggleStatusBadge(branchA.id, "done");
+		expect(branchA.statusBadge).toBeUndefined();
+
+		controller.setStatusBadge(branchA.id, "blocked");
+		controller.toggleStatusBadge(branchA.id, "done");
+		expect(branchA.statusBadge).toBe("done"); // overrides an existing different badge rather than toggling it off
 	});
 
 	it("revealAndSelect unfolds every folded ancestor of a hidden node and selects it", () => {
@@ -197,6 +235,21 @@ describe("Controller", () => {
 		expect(branchA.parent).toBe(controller.model.root);
 	});
 
+	it("copy then paste carries the status badge onto the clone (semantic state, unlike manualPos/colorKey)", () => {
+		const controller = makeController();
+		const branchA = controller.model.root.children[0];
+		const branchB = controller.model.root.children[1];
+		controller.setStatusBadge(branchA.id, "started");
+		controller.select(branchA.id);
+		controller.copySelected();
+
+		controller.select(branchB.id);
+		controller.pasteToSelected();
+
+		const pasted = branchB.children[0];
+		expect(pasted.statusBadge).toBe("started");
+	});
+
 	it("paste can be repeated, cloning fresh ids each time", () => {
 		const controller = makeController();
 		const branchA = controller.model.root.children[0];
@@ -249,10 +302,10 @@ describe("Controller", () => {
 		expect(branchA.children[0]).toBe(childA);
 	});
 
-	it("cutSelected cannot cut the root", () => {
+	it.each(["deleteSelected", "cutSelected"] as const)("%s cannot act on the root", (method) => {
 		const controller = makeController();
 		controller.select(controller.model.root.id);
-		controller.cutSelected();
+		controller[method]();
 		expect(controller.model.byId.has(controller.model.root.id)).toBe(true);
 	});
 
@@ -288,6 +341,71 @@ describe("Controller", () => {
 
 		controller.undo();
 		expect(branchB.children.length).toBe(0);
+	});
+});
+
+/**
+ * F1: `assignMissingColors` isn't part of `Controller` itself — it's run by
+ * the view's `onChange` handler, alongside `computeLayout`, after every
+ * mutation (see `MindMapView.onChange`). These tests call it explicitly
+ * right after the Controller mutation, the same way the real pipeline
+ * would, to exercise the paste/move color-adoption fix end-to-end rather
+ * than unit-testing `assignMissingColors` in isolation (already covered in
+ * colors.test.ts).
+ */
+describe("Controller + assignMissingColors (F1: pasted/moved branch adopts the target branch's color)", () => {
+	it("pasting a colored first-level branch inside a differently-colored branch resolves to the target's color", () => {
+		const controller = makeController(["# Root", "## Branch A", "- a", "## Branch B", "- b"].join("\n"));
+		assignMissingColors(controller.model.root);
+		const branchA = controller.model.root.children[0];
+		const branchB = controller.model.root.children[1];
+		expect(branchA.colorKey).not.toBe(branchB.colorKey);
+
+		controller.select(branchA.id);
+		controller.copySelected();
+		controller.select(branchB.id);
+		controller.pasteToSelected();
+		assignMissingColors(controller.model.root); // what MindMapView.onChange would do next
+
+		const pasted = branchB.children[branchB.children.length - 1];
+		expect(pasted.colorKey).toBeUndefined(); // not a first-level branch anymore
+		expect(resolveNodeColorKey(pasted)).toBe(branchB.colorKey);
+		expect(resolveNodeColorKey(pasted)).not.toBe(branchA.colorKey);
+	});
+
+	it("pasting a colored first-level branch at root level gets a fresh, distinct color", () => {
+		const controller = makeController(["# Root", "## Branch A", "- a", "## Branch B"].join("\n"));
+		assignMissingColors(controller.model.root);
+		const branchA = controller.model.root.children[0];
+		const branchB = controller.model.root.children[1];
+
+		controller.select(branchA.id);
+		controller.copySelected();
+		controller.select(null); // nothing selected -> pastes as a new child of root
+		controller.pasteToSelected();
+		assignMissingColors(controller.model.root);
+
+		const pasted = controller.model.root.children[controller.model.root.children.length - 1];
+		expect(pasted.colorKey).toBeDefined();
+		expect(pasted.colorKey).not.toBe(branchA.colorKey);
+		expect(pasted.colorKey).not.toBe(branchB.colorKey);
+	});
+
+	it("drag-reordering (moveNode) a first-level branch inside another branch adopts the target's color", () => {
+		const controller = makeController(["# Root", "## Branch A", "## Branch B"].join("\n"));
+		assignMissingColors(controller.model.root);
+		const branchA = controller.model.root.children[0];
+		const branchB = controller.model.root.children[1];
+		const staleColor = branchA.colorKey;
+		expect(staleColor).not.toBe(branchB.colorKey);
+
+		controller.moveNode(branchA.id, branchB.id, "inside");
+		assignMissingColors(controller.model.root); // what MindMapView.onChange would do next
+
+		expect(branchA.parent).toBe(branchB);
+		expect(branchA.colorKey).toBeUndefined(); // no longer a direct child of root
+		expect(resolveNodeColorKey(branchA)).toBe(branchB.colorKey);
+		expect(resolveNodeColorKey(branchA)).not.toBe(staleColor);
 	});
 });
 
@@ -505,25 +623,19 @@ describe("Controller clipboard export/paste (plan item 06: tree copy to OS clipb
 			return makeController(["# Root", "## A", "- a1", "- a2", "- a3"].join("\n"));
 		}
 
-		it("Alt+Up swaps the selected node with its previous sibling", () => {
+		it.each([
+			["up", [1, 0, 2]],
+			["down", [0, 2, 1]],
+		] as const)("Alt+%s swaps the selected node with its neighbor, selection following the moved node's id", (direction, order) => {
 			const controller = makeSiblingsController();
 			const a = controller.model.root.children[0];
-			const [a1, a2, a3] = a.children;
+			const originalIds = a.children.map((n) => n.id);
+			const a2 = a.children[1];
 			controller.select(a2.id);
 
-			controller.moveSelectedInSiblingOrder("up");
-			expect(a.children.map((n) => n.id)).toEqual([a2.id, a1.id, a3.id]);
-			expect(controller.selectedId).toBe(a2.id); // selection follows the moved node's id, not its slot
-		});
-
-		it("Alt+Down swaps the selected node with its next sibling", () => {
-			const controller = makeSiblingsController();
-			const a = controller.model.root.children[0];
-			const [a1, a2, a3] = a.children;
-			controller.select(a2.id);
-
-			controller.moveSelectedInSiblingOrder("down");
-			expect(a.children.map((n) => n.id)).toEqual([a1.id, a3.id, a2.id]);
+			controller.moveSelectedInSiblingOrder(direction);
+			expect(a.children.map((n) => n.id)).toEqual(order.map((i) => originalIds[i]));
+			expect(controller.selectedId).toBe(a2.id);
 		});
 
 		it("is a no-op on the first sibling with Alt+Up, and the last sibling with Alt+Down", () => {

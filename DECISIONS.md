@@ -1347,3 +1347,124 @@ answer — whether the brief reveal-time rebuild-flash *feels* acceptable in a
 real window — is called out in `benchmarks.md`'s consolidated F5 checklist
 as the observation that could reopen this, but absent that signal, `false`
 is the decided state.
+
+---
+
+## 2026-07-20 — Phase A: re-synced the platform-free core to reference HEAD (relations, status badges, tall-node-overlap fix)
+
+**Context:** the reference Obsidian plugin gained node relations (same-doc
+arrows + cross-doc badges, commits 4c7d178/f58b3c1/7578f31), status badges
+(bfd6997), and two bug fixes (cc1bf66 color-inheritance/center-into-view,
+61d8aa0 tall-node-overlap) since this repo's M0 port point (`0a66f7c`).
+Phase A brings the platform-free core current with all of that, without
+yet building any VS Code-side UI wiring for the new features.
+
+**Decision — re-synced verbatim, core stays byte-identical (plus the one
+authorized exception):** copied reference HEAD's `model/{types,links,
+mutations}.ts` and the two new files `model/{relations,statusBadges}.ts`,
+`layout/layoutEngine.ts`, `render/{colors,navigation}.ts`, `sync/{metadata,
+serializer}.ts` and the new `sync/foreignRelation.ts`, and
+`controller/Controller.ts` into `webview/` verbatim — `diff -rq` against
+reference HEAD confirms `model/`, `layout/`, `sync/`, `controller/` are
+byte-identical, same discipline as M0. `render/SvgRenderer.ts` was copied
+from reference HEAD and then had the additive `getViewport`/`setViewport`
+pair (the one authorized divergence, 2026-07-18 entry above) re-applied
+immediately after `ensureWorldRectVisible` (reference's own new
+`ensureWorldRectVisible`, added by cc1bf66, now occupies the spot
+immediately after `centerOnWorldPoint` that the pair originally sat in) —
+confirmed with `diff -u` against reference HEAD: 26 added lines, 0 removed,
+nothing else touched. Every new/re-synced file was grepped for `"obsidian"`
+imports before copying — none found; the new `ForeignVaultReader`/
+`ForeignVaultWriter` interfaces in `sync/foreignRelation.ts` are injected,
+not Obsidian-coupled, exactly as the plan anticipated.
+
+**`webview/ui/InlineEditor.ts` — a second, narrower divergence, now
+resolved by re-sync:** this file was ported byte-identical from reference's
+`src/view/InlineEditor.ts` back at M1 (DECISIONS.md, 2026-07-16) — outside
+the model/layout/render/sync/controller "protected core," but tracked the
+same way. Reference's 7578f31 added one additive method to it
+(`reposition()`, F3: keeps the editor glued to its node's screen position
+across pan/zoom) — platform-free, zero Obsidian coupling, needed by the
+ported `inlineEditor.test.ts`. Applied the same way: copied reference HEAD's
+version in; `diff -u` confirms byte-identical, not just additive — this
+file was never claimed byte-identical with local additions the way
+`SvgRenderer.ts` is, so a clean re-copy was the simpler, more honest
+outcome. `reposition()` is not called from `webview/main.ts` — dormant
+until the M-equivalent viewport-tracking wiring lands (out of Phase A
+scope).
+
+**Tests ported wholesale from reference HEAD** (per the coordinator's
+instruction to prefer whole-file replacement over hand-merging, since
+they're platform-free): `relations.test.ts`, `relationsRenderer.test.ts`,
+`foreignRelation.test.ts`, `statusBadgePersistence.test.ts` (new), and
+`metadata/controller/serializer/colors/layout/manualPosition/renderer.smoke/
+links/inlineEditor.test.ts` (updated), plus the new `ensureVisible.test.ts`
+and `test/helpers/{model,render}.ts` (shared scaffolding several of the
+above import — not explicitly named in the task's file list but a direct
+prerequisite, ported the same way). Import paths adjusted `../src/X` ->
+`../webview/X` (and `../src/view/InlineEditor` -> `../webview/ui/
+InlineEditor`, since that file lives one directory shallower in this repo's
+layout), matching the M0-established convention. Did **not** port any
+Obsidian-view-coupled test (nothing here imports `MindMapView`/`Modal`) — no
+tests needed `describe.skip`; every ported test is genuinely platform-free
+and passes as-is.
+
+**Two pre-existing behaviors this re-sync legitimately changed, and how the
+fallout was handled (not silently absorbed):**
+1. **Link-click semantics (4c7d178):** a plain click on a node's link text
+   used to navigate immediately; now it falls through to ordinary node
+   selection, and Ctrl/Cmd+click is the dedicated "open this link" gesture
+   — an intentional upstream UX fix (the old behavior made a linked node
+   unselectable by clicking it). This broke one of our own (out-of-
+   Phase-A-scope) `test/webviewBootstrap.test.ts` assertions, which
+   expected the old semantics. Fixed the test to assert the new, correct
+   semantics (Ctrl/Cmd+click navigates, plain click selects) rather than
+   weakening it — the same kind of test-currency maintenance the reference
+   repo's own commit did for its equivalent `MindMapView` tests.
+2. **A cascading test-order bug this surfaced, not introduced:** the fixed
+   test's own click sequence (select a node, edit it, then raw-dispatch a
+   second click on its link) landed both clicks on the same node within
+   `SvgRenderer`'s `DOUBLE_CLICK_MS` (400ms) window — trivial in a
+   synchronous unit test, unlikely in real interactive use — which
+   misfired the existing double-click-to-edit gesture and left an inline
+   editor open, breaking the next test in the file (`this.inlineEditor`
+   guards `handleCommand` from acting). Fixed by adding the same
+   "reset double-click tracking via a background click" idiom this test
+   file's own `findNodeEl` helper already uses elsewhere, rather than
+   loosening the double-click window or any source-level behavior.
+
+**Bench script:** ported `scripts/bench-relations.mjs` (path strings
+`src/…` -> `webview/…`, matching the other bench scripts) and added
+`npm run bench:relations`. Numbers in `benchmarks.md`'s new Phase A
+section — both fixture sizes comfortably inside budget.
+
+**Dormant by design (Phase A does not wire these):** `showRelations`
+defaults to `true` in `SvgRenderer`'s constructor (reference's own
+default), but `webview/main.ts` never calls `resolveRelations` or passes an
+`activeRelations` array to `mount`/`update` (both default that parameter to
+`[]`), so the relations layer stays empty regardless. No node ever gets a
+`statusBadge` (no UI sets one). `sync/foreignRelation.ts`'s
+`ForeignVaultReader`/`Writer` seam has no VS Code-side implementation yet.
+None of this required any edit to `webview/main.ts` or
+`src/MindMapEditorProvider.ts` to keep compiling — every new
+constructor/function parameter these ported files introduced already
+defaults to the value that preserves current (pre-Phase-A) behavior, which
+is what made this a clean core upgrade rather than a wiring task.
+
+**Verification:** `npm run build` clean; `npm test` — 36 files, 479 tests,
+0 failed, 0 skipped. `diff -rq webview/{model,layout,sync,controller}`
+against reference HEAD `src/{...}`: byte-identical. `render/`: differs only
+in `SvgRenderer.ts`, confirmed additive-only (0 removed / 26 added lines) by
+`diff -u`.
+
+**Cost:** none of the ported code runs yet from any real interaction path
+(dormant, see above) except the two intentional behavior changes (link
+click semantics, tall-node-overlap layout fix) and the pre-existing
+model/render code paths they touch — no new per-frame or per-keystroke
+work. `bench:relations` (a new benchmark, not a regression check against a
+prior number) shows both fixture sizes inside their existing open/edit
+budgets. Flagging for the benchmark phase per the task's guardrail: once
+relations are actually wired to run on every `onChange` (Phase B/C),
+`resolveRelations`'s per-node work and the relations-layer arrow rendering
+become real per-edit costs worth re-measuring against budget at that point,
+not just at this dormant-code baseline.

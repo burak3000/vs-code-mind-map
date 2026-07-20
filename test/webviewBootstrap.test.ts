@@ -360,7 +360,12 @@ describe("webview bootstrap (main.ts) — M3 feature wiring", () => {
 		expect(text.indexOf("child two")).toBeLessThan(text.indexOf("child one"));
 	});
 
-	it("clicking a wikilink in a node's text posts an 'openLink' message to the host instead of navigating in-webview", () => {
+	it("a plain click on a wikilink in a node's text selects the node instead of navigating; Ctrl/Cmd+click posts 'openLink' to the host", () => {
+		// Reference behavior change (4c7d178): a node whose text is/contains a
+		// link used to be unselectable by clicking it (every click navigated
+		// away immediately). Now a plain click falls through to ordinary node
+		// selection, and Ctrl/Cmd+click is the deliberate "open this link"
+		// gesture.
 		resetTree();
 		selectNodeByText("child one");
 		keydown("F2");
@@ -368,10 +373,21 @@ describe("webview bootstrap (main.ts) — M3 feature wiring", () => {
 		editor.value = "See [[Some Note]]";
 		editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
 
+		// Reset double-click tracking (same idiom as findNodeEl above) — without
+		// this, the raw link click below lands within DOUBLE_CLICK_MS of the
+		// selectNodeByText click on the same node and misfires as a double-click
+		// edit-request instead of the single click this test means to send.
+		document.querySelector(".mm-svg")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
 		postMessage.mockClear();
 		const link = document.querySelector<SVGElement>(".mm-node-link")!;
 		expect(link.dataset.linkKind).toBe("wikilink");
+
 		link.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "openLink" }));
+		expect(document.querySelectorAll(".mm-selected").length).toBe(1);
+
+		link.dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true, metaKey: true }));
 		expect(postMessage).toHaveBeenCalledWith({ type: "openLink", kind: "wikilink", target: "Some Note" });
 	});
 

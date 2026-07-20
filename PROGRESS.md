@@ -8,7 +8,7 @@ Implementation is done by a Sonnet 5 agent, milestone by milestone, with a
 review gate after each milestone; performance trade-offs are decided by the
 user, never by the agent (rule 3).
 
-_Last updated: 2026-07-18 (M5 completed — webview state persistence with exact pan/zoom restore, workspace-trust/virtual-workspace declarations, `.vscodeignore`/`vsce package`, README/CHANGELOG/LICENSE/RELEASING.md; both escalations decided by the user — `retainContextWhenHidden` stays `false`, and the authorized additive `SvgRenderer.getViewport`/`setViewport` pair is the one intentional core divergence; benchmarks clean, all within budget; `model/layout/sync/controller` still byte-identical, `render/` differs only by the authorized additive pair)._
+_Last updated: 2026-07-20 (Phase A of the post-M5 catch-up completed — platform-free core re-synced to the reference's current state, which has gained node relations, status badges, and bug fixes since the M0 port point; new features land dormant, wired in Phases B–D below)._
 
 ## Milestone status
 
@@ -20,6 +20,21 @@ _Last updated: 2026-07-18 (M5 completed — webview state persistence with exact
 | M3 | Full feature parity (folding, links, manual positioning, search, context menu, multi-select/clipboard, Ctrl/Cmd+M toggle) | **Done** (both escalations resolved; benchmarks re-run clean on an idle window, all within budget) |
 | M4 | Images (display **+ clipboard image paste, moved from M3**), VS Code theming (`--vscode-*` vars), settings (`contributes.configuration`) | **Done** (one escalation — pasted-image save location — resolved by the user; benchmarks clean on an idle window, all within budget) |
 | M5 | Hardening (5k stress, webview lifecycle, workspace trust), packaging (`vsce`), release readiness | **Done** — both escalations decided by the user (`retainContextWhenHidden` `false`; authorized additive `SvgRenderer` viewport pair); real-window F5 pass remains the human gate (consolidated in `benchmarks.md`) |
+
+## Post-M5: catching up to reference-plugin feature work
+
+After M5, the user reported adding substantial new features to the
+reference Obsidian plugin (node relations, status badges) plus several bug
+fixes, all after this repo's M0 port point. This is a new, unplanned body
+of work (not in the original plan's §9 roadmap), broken into phases the
+same way the milestones were:
+
+| Phase | Scope | Status |
+|---|---|---|
+| A | Re-sync the platform-free core (`model/layout/render/sync/controller` + `webview/ui/InlineEditor.ts`) to the reference's current state; port new/updated tests; keep the build green with new features dormant | **Done** |
+| B | Status badges: VS Code wiring (keyboard shortcuts, context-menu items, click handlers) | Pending |
+| C | Node relations: VS Code wiring (redesigned relation modal/combobox, cross-document host-side file reader, `showRelations` setting, styles, external-link-opening fix, center-into-view UX fixes) | Pending |
+| D | Docs (XMind-trademark scrub, README/CHANGELOG updates), re-benchmark with features live, re-package | Pending |
 
 ## M0 — done
 
@@ -360,6 +375,57 @@ Delivered, in `webview/main.ts`, `package.json`, and new top-level files
 - **Both M5 escalations resolved by the user** (`retainContextWhenHidden`
   → `false`; full pan/zoom fidelity → additive `SvgRenderer` change,
   implemented). Everything in M5's scope is done; nothing is pending.
+
+## Phase A — done (post-M5 catch-up: core re-sync)
+
+Re-synced the platform-free core to the reference plugin's current state
+(it gained node relations, status badges, and bug fixes after this repo's
+M0 port point at `0a66f7c`). Full reasoning in DECISIONS.md's dated
+"Phase A" entry; summary:
+
+- **Re-synced verbatim:** `model/{types,links,mutations}.ts` + two new
+  files `model/{relations,statusBadges}.ts`; `layout/layoutEngine.ts`
+  (includes the tall-node-overlap fix); `render/{colors,navigation}.ts`;
+  `sync/{metadata,serializer}.ts` + new `sync/foreignRelation.ts`;
+  `controller/Controller.ts`. All confirmed `diff -rq` byte-identical to
+  reference HEAD, same discipline as every prior milestone. New
+  `ForeignVaultReader`/`ForeignVaultWriter` interfaces in
+  `foreignRelation.ts` are injected (not Obsidian-coupled) as the plan
+  anticipated — no `"obsidian"` import anywhere in the re-synced set.
+- **`render/SvgRenderer.ts`:** re-copied from reference HEAD, then the
+  authorized `getViewport`/`setViewport` pair re-applied — still additive
+  only (26 added, 0 removed vs. reference HEAD). `webview/ui/
+  InlineEditor.ts` (ported outside the protected core at M1) went back to
+  fully byte-identical — the reference's new `reposition()` method came
+  along for free, dormant until wired.
+- **Tests:** 479 passed / 0 skipped (36 files, up from 374/30) — new
+  `relations.test.ts`, `relationsRenderer.test.ts`, `foreignRelation.test.ts`,
+  `statusBadgePersistence.test.ts`, `ensureVisible.test.ts`,
+  `test/helpers/{model,render}.ts`; several existing test files updated to
+  match upstream changes. No `describe.skip`s needed — every ported test
+  is genuinely platform-free.
+- **One legitimate upstream behavior change absorbed, not silently
+  papered over:** a plain click on a node's link text used to navigate
+  immediately; now it selects the node, and Ctrl/Cmd+click is the
+  dedicated "open this link" gesture (an intentional upstream fix — the
+  old behavior made linked nodes unselectable by clicking). Our own
+  `webviewBootstrap.test.ts` asserted the old semantics; fixed to assert
+  the new, correct ones, plus a cascading double-click test-timing bug the
+  fix surfaced (see DECISIONS.md).
+- **New features are dormant by design:** `showRelations` defaults `true`
+  in `SvgRenderer`'s constructor, but `webview/main.ts` never calls
+  `resolveRelations` or sets a `statusBadge` — no code path in this
+  extension creates one yet, so the relations layer stays empty and no
+  node shows a status badge regardless of that default. No edits to
+  `webview/main.ts`/`src/MindMapEditorProvider.ts` were needed to keep
+  compiling — every new parameter these files introduced defaults to the
+  value that preserves current behavior.
+- **`bench:relations`** ported and added as an npm script; both fixture
+  sizes (2,000/200 relations, 5,000/500 relations) comfortably inside the
+  open budget. This is a ported-core baseline, not real-usage measurement
+  — relations aren't wired to run on every edit until Phase B/C, at which
+  point it's flagged for re-measurement, not silently assumed fine.
+- Not committed — left for the user, same as every phase so far.
 
 ## Decisions taken so far
 

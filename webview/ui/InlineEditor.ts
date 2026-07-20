@@ -134,6 +134,27 @@ export class InlineEditor {
 		this.input.style.width = `${width}px`;
 	}
 
+	/**
+	 * F3: re-syncs the overlay's screen position (and font size, since zoom
+	 * changes that too) after the canvas's pan/zoom transform changes
+	 * underneath it — called from `MindMapView`'s viewport-change subscription,
+	 * never on a keystroke/tree-mutation path. Left/top always follow `rect`;
+	 * width is re-measured against the new font (if `fontSize` changed) so the
+	 * grow-with-content behavior stays consistent with the new zoom level,
+	 * without discarding a height the user already grew past the original
+	 * `rect.height` by typing multiple lines.
+	 */
+	reposition(rect: ScreenRect, fontSize?: number): void {
+		if (this.committed) return;
+		this.input.style.left = `${rect.left}px`;
+		this.input.style.top = `${rect.top}px`;
+		if (fontSize) {
+			this.input.style.fontSize = `${fontSize}px`;
+			this.measureEl.style.font = getComputedStyle(this.input).font;
+			this.resizeWidth();
+		}
+	}
+
 	destroy(): void {
 		if (this.committed) return;
 		this.committed = true;

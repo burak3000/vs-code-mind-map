@@ -1,26 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { parseTextSegments, getDisplayText, getSoleLink, parseEmbeds, getImageEmbed, isImageTarget } from "../webview/model/links";
+import {
+	parseTextSegments,
+	getDisplayText,
+	getSoleLink,
+	parseEmbeds,
+	getImageEmbed,
+	isImageTarget,
+	isUrlTarget,
+	normalizeUrlTarget,
+	isAbsoluteFilesystemPath,
+	expandHomePath,
+	appendLinkText,
+	removeLinkOccurrence,
+} from "../webview/model/links";
 
 describe("parseTextSegments", () => {
-	it("returns a single plain segment for text with no links", () => {
-		expect(parseTextSegments("just text")).toEqual([{ text: "just text", link: null }]);
-	});
-
-	it("parses a bare wikilink", () => {
-		expect(parseTextSegments("[[Some Note]]")).toEqual([{ text: "Some Note", link: { kind: "wikilink", target: "Some Note" } }]);
-	});
-
-	it("parses an aliased wikilink, showing the alias", () => {
-		expect(parseTextSegments("[[Some Note|Display]]")).toEqual([{ text: "Display", link: { kind: "wikilink", target: "Some Note" } }]);
-	});
-
-	it("parses a markdown link", () => {
-		expect(parseTextSegments("[label](https://example.com)")).toEqual([{ text: "label", link: { kind: "mdlink", target: "https://example.com" } }]);
+	it.each([
+		["just text", [{ text: "just text", link: null }]],
+		["[[Some Note]]", [{ text: "Some Note", link: { kind: "wikilink", target: "Some Note" } }]],
+		["[[Some Note|Display]]", [{ text: "Display", link: { kind: "wikilink", target: "Some Note" } }]], // aliased wikilink shows the alias
+		["[label](https://example.com)", [{ text: "label", link: { kind: "mdlink", target: "https://example.com" } }]],
+	])("parses %s", (input, expected) => {
+		expect(parseTextSegments(input)).toEqual(expected);
 	});
 
 	it("mixes plain text and a link in one string, preserving order", () => {
-		const segments = parseTextSegments("Check [[Note A]] please");
-		expect(segments).toEqual([
+		expect(parseTextSegments("Check [[Note A]] please")).toEqual([
 			{ text: "Check ", link: null },
 			{ text: "Note A", link: { kind: "wikilink", target: "Note A" } },
 			{ text: " please", link: null },
@@ -33,12 +38,10 @@ describe("parseTextSegments", () => {
 	});
 });
 
-describe("getDisplayText", () => {
-	it("strips link syntax down to the visible label", () => {
-		expect(getDisplayText("Check [[Some Note|Display]] please")).toBe("Check Display please");
-		expect(getDisplayText("[label](https://example.com)")).toBe("label");
-		expect(getDisplayText("no links here")).toBe("no links here");
-	});
+it("getDisplayText strips link syntax down to the visible label", () => {
+	expect(getDisplayText("Check [[Some Note|Display]] please")).toBe("Check Display please");
+	expect(getDisplayText("[label](https://example.com)")).toBe("label");
+	expect(getDisplayText("no links here")).toBe("no links here");
 });
 
 describe("getSoleLink", () => {
@@ -47,26 +50,21 @@ describe("getSoleLink", () => {
 		expect(getSoleLink("[label](url)")).toEqual({ kind: "mdlink", target: "url", label: "label" });
 	});
 
-	it("returns null when there is surrounding plain text", () => {
-		expect(getSoleLink("Check [[Note]] please")).toBeNull();
-	});
-
-	it("returns null when there is no link at all", () => {
-		expect(getSoleLink("plain text")).toBeNull();
+	it.each([
+		["Check [[Note]] please", "surrounding plain text"],
+		["plain text", "no link at all"],
+	])("returns null given %s (%s)", (text) => {
+		expect(getSoleLink(text)).toBeNull();
 	});
 });
 
 describe("parseEmbeds (plan item 07: image display)", () => {
-	it("parses a wikilink embed", () => {
-		expect(parseEmbeds("![[photo.png]]")).toEqual([{ kind: "wikilink", target: "photo.png", alt: "photo.png" }]);
-	});
-
-	it("parses a wikilink embed with an alias as alt text", () => {
-		expect(parseEmbeds("![[photo.png|My photo]]")).toEqual([{ kind: "wikilink", target: "photo.png", alt: "My photo" }]);
-	});
-
-	it("parses a markdown-form embed", () => {
-		expect(parseEmbeds("![alt text](path/to.png)")).toEqual([{ kind: "mdlink", target: "path/to.png", alt: "alt text" }]);
+	it.each([
+		["![[photo.png]]", "wikilink embed", [{ kind: "wikilink", target: "photo.png", alt: "photo.png" }]],
+		["![[photo.png|My photo]]", "wikilink embed with an alias as alt text", [{ kind: "wikilink", target: "photo.png", alt: "My photo" }]],
+		["![alt text](path/to.png)", "markdown-form embed", [{ kind: "mdlink", target: "path/to.png", alt: "alt text" }]],
+	])("parses a %s", (input, _label, expected) => {
+		expect(parseEmbeds(input)).toEqual(expected);
 	});
 
 	it("does not confuse a regular (non-embed) link with an embed", () => {
@@ -75,16 +73,56 @@ describe("parseEmbeds (plan item 07: image display)", () => {
 	});
 
 	it("finds multiple embeds in one string", () => {
-		const embeds = parseEmbeds("![[a.png]] and ![[b.png]]");
-		expect(embeds.map((e) => e.target)).toEqual(["a.png", "b.png"]);
+		expect(parseEmbeds("![[a.png]] and ![[b.png]]").map((e) => e.target)).toEqual(["a.png", "b.png"]);
+	});
+});
+
+describe("appendLinkText (R3/R5, D7 visible append)", () => {
+	it("appends to non-empty text with a plain arrow separator", () => {
+		expect(appendLinkText("Kickoff", "[[#^tgt1]]")).toBe("Kickoff → [[#^tgt1]]");
+	});
+
+	it.each(["", "   "])("appends to empty (or whitespace-only, %j) text by returning just the new link", (existing) => {
+		expect(appendLinkText(existing, "[[#^tgt1]]")).toBe("[[#^tgt1]]");
+	});
+
+	it("appending twice produces two relations separated by two arrows", () => {
+		const once = appendLinkText("Kickoff", "[[#^a]]");
+		expect(appendLinkText(once, "[[#^b]]")).toBe("Kickoff → [[#^a]] → [[#^b]]");
+	});
+});
+
+describe("removeLinkOccurrence (R3/R5, D7 visible append)", () => {
+	it("removes the sole link, leaving the preceding text with no dangling separator", () => {
+		expect(removeLinkOccurrence(appendLinkText("Kickoff", "[[#^a]]"), 0)).toBe("Kickoff");
+	});
+
+	it("removing one of two appended relations leaves the other's text and separator intact", () => {
+		const text = "Kickoff → [[#^a]] → [[#^b]]";
+		expect(removeLinkOccurrence(text, 0)).toBe("Kickoff → [[#^b]]");
+		expect(removeLinkOccurrence(text, 1)).toBe("Kickoff → [[#^a]]");
+	});
+
+	it("removing the first of two links when there's no leading plain text still leaves no dangling separator", () => {
+		const text = "[[#^a]] → [[#^b]]";
+		expect(removeLinkOccurrence(text, 0)).toBe("[[#^b]]");
+		expect(removeLinkOccurrence(text, 1)).toBe("[[#^a]]");
+	});
+
+	it("removing the only remaining link from a fully-link-only text yields an empty string", () => {
+		expect(removeLinkOccurrence("[[#^a]]", 0)).toBe("");
+	});
+
+	it("is a no-op for an out-of-range occurrence index", () => {
+		const text = "Kickoff → [[#^a]]";
+		expect(removeLinkOccurrence(text, 5)).toBe(text);
+		expect(removeLinkOccurrence(text, -1)).toBe(text);
 	});
 });
 
 describe("isImageTarget", () => {
 	it("recognizes common image extensions, case-insensitively", () => {
-		for (const ext of ["png", "PNG", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "avif"]) {
-			expect(isImageTarget(`photo.${ext}`)).toBe(true);
-		}
+		for (const ext of ["png", "PNG", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "avif"]) expect(isImageTarget(`photo.${ext}`)).toBe(true);
 	});
 
 	it("ignores a query string/fragment when checking the extension", () => {
@@ -98,26 +136,73 @@ describe("isImageTarget", () => {
 	});
 });
 
+describe("isUrlTarget", () => {
+	it("recognizes common URL schemes", () => {
+		for (const target of ["https://example.com", "http://example.com", "ftp://example.com/file"]) expect(isUrlTarget(target)).toBe(true);
+	});
+
+	it("recognizes a bare domain typed without a scheme", () => {
+		for (const target of ["www.youtube.com", "youtube.com", "example.co.uk", "sub.example.com/path?q=1"]) expect(isUrlTarget(target)).toBe(true);
+	});
+
+	it("rejects bare vault-relative note titles/paths, including ones that look dotted", () => {
+		expect(isUrlTarget("Some Note")).toBe(false);
+		expect(isUrlTarget("folder/Some Note")).toBe(false);
+		expect(isUrlTarget("Meeting notes v1.2")).toBe(false); // spaces -> never a URL
+		expect(isUrlTarget("config.json")).toBe(false); // dotted, but not a recognized TLD
+		expect(isUrlTarget("Some Note.md")).toBe(false); // .md deliberately excluded (see COMMON_BARE_TLDS doc comment)
+	});
+});
+
+describe("normalizeUrlTarget", () => {
+	it("leaves a target with an explicit scheme untouched", () => {
+		expect(normalizeUrlTarget("https://example.com")).toBe("https://example.com");
+	});
+
+	it("adds https:// to a bare domain with no scheme", () => {
+		expect(normalizeUrlTarget("www.youtube.com")).toBe("https://www.youtube.com");
+	});
+});
+
+describe("isAbsoluteFilesystemPath", () => {
+	it("recognizes POSIX absolute, home-relative, and Windows-style paths", () => {
+		for (const target of ["/Users/me/file.pdf", "~", "~/Documents", "C:\\Users\\me\\file.txt", "D:/data"]) expect(isAbsoluteFilesystemPath(target)).toBe(true);
+	});
+
+	it("rejects vault-relative paths and note titles", () => {
+		expect(isAbsoluteFilesystemPath("Some Note")).toBe(false);
+		expect(isAbsoluteFilesystemPath("attachments/file.pdf")).toBe(false);
+	});
+});
+
+describe("expandHomePath", () => {
+	it("expands a bare ~ and a ~/ prefix", () => {
+		expect(expandHomePath("~", "/Users/me")).toBe("/Users/me");
+		expect(expandHomePath("~/Documents/file.pdf", "/Users/me")).toBe("/Users/me/Documents/file.pdf");
+	});
+
+	it("leaves a non-~ path unchanged", () => {
+		expect(expandHomePath("/Users/me/file.pdf", "/Users/me")).toBe("/Users/me/file.pdf");
+	});
+});
+
 describe("getImageEmbed (plan item 07: image display)", () => {
-	it("returns the embed when the target is an image", () => {
-		expect(getImageEmbed("![[photo.png]]")).toEqual({ kind: "wikilink", target: "photo.png", alt: "photo.png" });
+	it.each([
+		["![[photo.png]]", "bare embed"],
+		["Photo: ![[photo.png]]", "alongside surrounding caption text (unlike getSoleLink, doesn't require the whole text to be just the embed)"],
+	])("returns the embed for %s (%s)", (text) => {
+		expect(getImageEmbed(text)).toEqual({ kind: "wikilink", target: "photo.png", alt: "photo.png" });
 	});
 
-	it("returns the embed even alongside surrounding caption text (unlike getSoleLink, doesn't require the whole text to be just the embed)", () => {
-		expect(getImageEmbed("Photo: ![[photo.png]]")).toEqual({ kind: "wikilink", target: "photo.png", alt: "photo.png" });
-	});
-
-	it("returns null when the embed's target isn't an image (e.g. a PDF)", () => {
-		expect(getImageEmbed("![[note.pdf]]")).toBeNull();
-	});
-
-	it("returns null when there's no embed at all", () => {
-		expect(getImageEmbed("plain text")).toBeNull();
-		expect(getImageEmbed("[[Some Note]]")).toBeNull(); // a regular link, not an embed
+	it.each([
+		["![[note.pdf]]", "target isn't an image"],
+		["plain text", "no embed at all"],
+		["[[Some Note]]", "a regular link, not an embed"],
+	])("returns null for %s (%s)", (text) => {
+		expect(getImageEmbed(text)).toBeNull();
 	});
 
 	it("returns the first image embed when there are several", () => {
-		const embed = getImageEmbed("![[a.png]] ![[b.png]]");
-		expect(embed?.target).toBe("a.png");
+		expect(getImageEmbed("![[a.png]] ![[b.png]]")?.target).toBe("a.png");
 	});
 });

@@ -6,6 +6,7 @@ import {
 	renameNode,
 	restoreNode,
 	setFolded,
+	setStatusBadge,
 	setManualPosition,
 	clearManualPosition,
 	setManualWidth,
@@ -388,6 +389,25 @@ export class Controller {
 			undo: () => setFolded(this.model, nodeId, before),
 		});
 		this.emitChange();
+	}
+
+	/** Sets/clears a node's status badge (Done/Started/Blocked/Red Flag/Green Flag/Ready to work on — model/statusBadges.ts) from the context menu, the Cmd+Shift+I quick-pick menu, or a click on an existing badge. */
+	setStatusBadge(nodeId: string, badge: string | undefined): void {
+		const node = this.model.byId.get(nodeId);
+		if (!node) return;
+		const before = node.statusBadge;
+		this.stack.execute({
+			do: () => setStatusBadge(this.model, nodeId, badge),
+			undo: () => setStatusBadge(this.model, nodeId, before),
+		});
+		this.emitChange();
+	}
+
+	/** Direct-toggle shortcut for a single badge (currently just Cmd+Shift+D for "done") — applies it if not already set, clears it if it is, so repeated presses don't pile up undo entries that just reapply the same value. */
+	toggleStatusBadge(nodeId: string, badge: string): void {
+		const node = this.model.byId.get(nodeId);
+		if (!node) return;
+		this.setStatusBadge(nodeId, node.statusBadge === badge ? undefined : badge);
 	}
 
 	/** Alt+drag (R12): pins a node to an absolute position, excluding it from auto-balance. */
