@@ -872,3 +872,97 @@ phase is considered done in practice, in a real F5 window:
   reopen the map — confirm each badge's glyph/color persists (the model-
   level round trip is covered by `statusBadgePersistence.test.ts`, but that
   test doesn't paint pixels).
+
+## Phase C — relations wired live (settings, resolveRelations in the render loop, cross-doc badge click, external-link-open fix); modal redesign escalated, not built
+
+Scope actually completed this phase (see DECISIONS.md's dated "Phase C"
+entry for full reasoning): the `showRelations` setting (`package.json`,
+host config plumbing, baked into `SvgRenderer`'s constructor exactly like
+`animationNodeThreshold`); `resolveRelations` wired into
+`buildFromScratch`/`onChange`/`rebuildFromExternalText` so relation arrows
+and cross-doc badges are no longer dormant; `SvgRenderer.
+setCrossDocBadgeClickHandler` wired to `openCrossDocRelation` (opens a
+node's first cross-doc relation via the existing `openLink` round trip);
+Ctrl/Cmd+Shift+G ("Go to note section" keyboard equivalent) routed as a
+command the same conservative way as every other VS Code-default-colliding
+chord; the external-link-opening fix (a URL/bare-domain, absolute
+filesystem path, or workspace-relative reference are now each routed
+correctly regardless of the link's stored `kind`) applied host-side in
+`MindMapEditorProvider.openLink`; and host-side `listMarkdownFiles`/
+`readForeignDocument`/`writeForeignDocument` message handlers (the VS Code
+implementation of `ForeignVaultReader`/`ForeignVaultWriter`'s data-access
+needs), ready for whichever UI the relation-authoring modal ends up using.
+
+**Not built this phase, escalated instead (see DECISIONS.md and the
+task-level report):** the redesigned relation/link modal itself (reference
+`7578f31`) — same-document relation *authoring* is still unavailable from
+the UI (resolving/rendering *pre-existing* `[[#^id]]` syntax in a document
+works end-to-end; there is no way yet to create one by clicking through
+the UI). This is a real functional gap, not a perf or correctness one —
+flagged rather than silently left implicit.
+
+### `npm run bench:relations` — re-run with relations now actually live
+
+```
+2000 nodes, 200 relations: open(parse+layout=18.7ms resolve=1.0ms mount=5.2ms
+total=31.0ms OK) Tab=15.9ms OK rename(relation source)=14.1ms OK
+pan-dispatch=3.1ms serialize=1.2ms
+  round-trip check: serialized text contains all 200 relation links: true
+5000 nodes, 500 relations: open(parse+layout=36.2ms resolve=1.4ms mount=2.8ms
+total=41.6ms OK) Tab=27.4ms OK rename(relation source)=30.7ms OK
+pan-dispatch=0.2ms serialize=1.5ms
+  round-trip check: serialized text contains all 500 relation links: true
+```
+
+Numbers are within noise of Phase A's dormant-baseline run (18.8/30.7/14.9/
+40.8/etc. above) — expected, since this benchmark script already called
+`resolveRelations`/`mount`/`update` directly (it exercises the ported core
+modules, not `webview/main.ts`); wiring `main.ts` to call the same
+functions at the same frequency doesn't change what this script measures,
+only that real interactive usage now actually exercises this path instead
+of it being dead code. Both fixtures comfortably clear every relevant
+budget: open (31.0ms/41.6ms vs. 1000ms/2000ms budgets for 2k/5k), Tab-edit
+(15.9ms/27.4ms vs. the 50ms target / 100ms hard ceiling), a rename that
+changes a relation's source text (14.1ms/30.7ms, same budget). **No
+performance trade-off to escalate** — this is the one mandatory perf
+checkpoint for this phase, and it clears cleanly.
+
+### Test suite
+
+**484 passed / 0 skipped** (36 files) — unchanged count from Phase B: this
+phase's wiring changes are covered by re-running the existing
+`webviewConfig.test.ts`/`renderer.smoke.test.ts`/`relationsRenderer.
+test.ts` suites (which already exercised `resolveRelations`/`mount`/
+`update`'s relations parameters end-to-end at the module level) plus two
+adjusted `mindMapEditorProvider.test.ts` assertions for the new
+`showRelations: true` field in the posted `setConfig` payload — not a
+weakened assertion, the same "assert the new, correct shape" treatment as
+every prior phase's config-shape churn.
+
+### REMAINING FOR HUMAN — Phase C (add to the consolidated real-window checklist)
+
+Everything above is jsdom — no real pixels, no real Chromium hit-testing,
+no real OS shell dispatch. Before this phase (the wired subset of it) is
+considered done in practice, in a real F5 window with a document that
+already has hand-authored `[[#^id]]` relation syntax and a cross-doc
+wikilink:
+
+- A same-document relation renders as a dashed arrow between the two
+  nodes, and the arrow visually tracks both nodes correctly through pan/
+  zoom/fold/drag.
+- A cross-document relation renders as a small badge at the node's corner;
+  clicking it opens the target document (`goToSection`'s "beside the map,
+  map stays open" semantics, reused via `openLink`).
+- Toggling `mindmapView.showRelations` off, reopening the map (setting is
+  next-open, not live) — arrows/badges are gone entirely, not just hidden.
+  Toggling back on and reopening restores them.
+- Ctrl/Cmd+Shift+G actually reaches the mind map, not VS Code's own "Show
+  Source Control" view (the same class of check Ctrl/Cmd+Shift+B/D/I
+  already needed).
+- External link opening: a node with a bare-domain link (`www.example.com`,
+  no `https://`) opens in the system browser; a node with an absolute
+  filesystem path link opens in the OS's default app (a file) or file
+  browser (a folder); all three cases work regardless of whether the link
+  happens to be stored as a wikilink or an mdlink.
+- **Relation *authoring* has no UI path yet** (escalated — see DECISIONS.md
+  and the task report) — nothing to check here until that lands.

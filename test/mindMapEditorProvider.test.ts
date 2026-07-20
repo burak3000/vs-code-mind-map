@@ -647,7 +647,7 @@ describe("MindMapEditorProvider (host)", () => {
 
 		expect(panel.webview.postMessage).toHaveBeenCalledWith({
 			type: "setConfig",
-			config: { writeDebounceMs: 400, animationNodeThreshold: 500, headingDepth: 2, layoutMode: "left-only" },
+			config: { writeDebounceMs: 400, animationNodeThreshold: 500, headingDepth: 2, layoutMode: "left-only", showRelations: true },
 		});
 
 		// Order matters: setConfig must have gone out before the "ready"
@@ -672,7 +672,7 @@ describe("MindMapEditorProvider (host)", () => {
 		fakeVscode.fireConfigChange(true);
 		expect(panel.webview.postMessage).toHaveBeenCalledWith({
 			type: "setConfig",
-			config: { writeDebounceMs: 900, animationNodeThreshold: 500, headingDepth: 1, layoutMode: "balanced" },
+			config: { writeDebounceMs: 900, animationNodeThreshold: 500, headingDepth: 1, layoutMode: "balanced", showRelations: true },
 		});
 	});
 

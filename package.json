@@ -78,6 +78,10 @@
 				"title": "Mind Map: Set Node Status..."
 			},
 			{
+				"command": "mindmapView.goToSection",
+				"title": "Mind Map: Go to Note Section"
+			},
+			{
 				"command": "mindmapView.toggleToText",
 				"title": "Mind Map: Switch to Markdown Editor"
 			},
@@ -141,6 +145,12 @@
 				"when": "activeCustomEditorId == 'mindmapView.editor'"
 			},
 			{
+				"command": "mindmapView.goToSection",
+				"key": "ctrl+shift+g",
+				"mac": "cmd+shift+g",
+				"when": "activeCustomEditorId == 'mindmapView.editor'"
+			},
+			{
 				"command": "mindmapView.toggleToText",
 				"key": "ctrl+m",
 				"mac": "cmd+m",
@@ -195,6 +205,11 @@
 					"type": "string",
 					"default": "",
 					"description": "Folder, relative to the markdown file's own folder, where images pasted from the clipboard into the map are saved. Empty (the default) saves them alongside the file. Example: \"assets\". Read fresh on each paste, so it takes effect immediately."
+				},
+				"mindmapView.showRelations": {
+					"type": "boolean",
+					"default": true,
+					"description": "Show same-document relation arrows and cross-document relation badges. Takes effect the next time a map is opened."
 				}
 			}
 		}

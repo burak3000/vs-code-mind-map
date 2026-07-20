@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
+import * as os from "os";
 
 /**
  * How long to wait after the last onDidChangeTextDocument event before
@@ -19,17 +20,67 @@ import * as path from "path";
 type LinkKind = "wikilink" | "mdlink";
 
 /** Every chord routed as a "command" message rather than reaching the webview's own keydown handler directly (see `registerRoutedCommand`'s doc comment) — mirrors `webview/main.ts`'s `CommandMessage["name"]` minus "flushWrite" (that one is host-initiated, not chord-routed, so it's never a target of `postCommandToActivePanel`). */
-type RoutedCommandName = "undo" | "redo" | "search" | "rebalance" | "linkEditor" | "toggleFold" | "toggleStatusDone" | "statusQuickPick";
+type RoutedCommandName = "undo" | "redo" | "search" | "rebalance" | "linkEditor" | "toggleFold" | "toggleStatusDone" | "statusQuickPick" | "goToNoteSection";
 
-/** A scheme-qualified URL (`https://…`, `mailto:…`, etc.) — anything else is treated as a workspace-relative path, same split the reference `MindMapView.openLink` makes. */
+/**
+ * Phase C external-link-open fix (reference `7578f31`): a URL — with or
+ * without an explicit scheme — always opens in the system browser, an
+ * absolute filesystem path opens via the OS, and anything else is a
+ * workspace-relative reference. These four helpers are the host-side
+ * (Node, not webview) copy of `webview/model/links.ts`'s
+ * `isUrlTarget`/`normalizeUrlTarget`/`isAbsoluteFilesystemPath`/
+ * `expandHomePath` — deliberately duplicated rather than imported, same as
+ * this file's pre-existing `LinkKind`/`URL_SCHEME_RE`: `webview/model/
+ * links.ts` is compiled against the browser-lib tsconfig
+ * (tsconfig.webview.json), and this file is the Node-side host (compiled
+ * against tsconfig.json) — see DECISIONS.md's two-tsconfig entry. Logic
+ * kept byte-for-byte identical to the webview copy; if one changes, mirror
+ * the change in the other.
+ */
 const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
 
-/** Mirrors `webview/settings` — the four settings that get baked into a webview session, plus the host-only external-edit forward debounce (never sent to the webview; applied directly to this file's own `setTimeout` call). Kept in sync by hand with `package.json`'s `contributes.configuration` and the reference's `PluginSettings.ts`/`DEFAULT_SETTINGS`. */
+const COMMON_BARE_TLDS = new Set([
+	"com", "org", "net", "io", "dev", "app", "co", "edu", "gov", "info", "biz", "me", "ai",
+	"us", "uk", "ca", "de", "fr", "jp", "cn", "in", "au", "nl", "xyz", "tv", "site", "online", "tech", "cloud",
+]);
+
+const BARE_DOMAIN_RE = /^((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+)([a-z]{2,24})(:\d+)?([/?#]\S*)?$/i;
+
+function hasBareDomainShape(target: string): boolean {
+	const m = BARE_DOMAIN_RE.exec(target);
+	if (!m) return false;
+	if (/^www\./i.test(target)) return true;
+	return COMMON_BARE_TLDS.has(m[2].toLowerCase());
+}
+
+function isUrlTarget(target: string): boolean {
+	return URL_SCHEME_RE.test(target) || hasBareDomainShape(target);
+}
+
+function normalizeUrlTarget(target: string): string {
+	return URL_SCHEME_RE.test(target) ? target : `https://${target}`;
+}
+
+const WINDOWS_ABS_RE = /^[a-zA-Z]:[\\/]/;
+
+function isAbsoluteFilesystemPath(target: string): boolean {
+	return target === "~" || target.startsWith("/") || target.startsWith("~/") || WINDOWS_ABS_RE.test(target);
+}
+
+function expandHomePath(target: string, homeDir: string): string {
+	if (target === "~") return homeDir;
+	if (target.startsWith("~/")) return homeDir + target.slice(1);
+	return target;
+}
+
+/** Mirrors `webview/settings` — the settings that get baked into a webview session, plus the host-only external-edit forward debounce (never sent to the webview; applied directly to this file's own `setTimeout` call). Kept in sync by hand with `package.json`'s `contributes.configuration` and the reference's `PluginSettings.ts`/`DEFAULT_SETTINGS`. */
 interface MindMapWebviewConfig {
 	writeDebounceMs: number;
 	animationNodeThreshold: number;
 	headingDepth: number;
 	layoutMode: "balanced" | "right-only" | "left-only";
+	/** R1a item 5: whether `SvgRenderer` resolves/draws relation arrows and cross-doc badges at all — baked in at the renderer's construction (like `animationNodeThreshold`), so a mid-session toggle takes effect the next time the map is (re)opened. See DECISIONS.md's dated "Phase C" entry. */
+	showRelations: boolean;
 }
 
 const DEFAULT_WEBVIEW_CONFIG: MindMapWebviewConfig = {
@@ -37,6 +88,7 @@ const DEFAULT_WEBVIEW_CONFIG: MindMapWebviewConfig = {
 	animationNodeThreshold: 500,
 	headingDepth: 1,
 	layoutMode: "balanced",
+	showRelations: true,
 };
 
 const DEFAULT_EXTERNAL_EDIT_FORWARD_DEBOUNCE_MS = 300;
@@ -49,6 +101,7 @@ function readWebviewConfig(resource: vscode.Uri): MindMapWebviewConfig {
 		animationNodeThreshold: cfg.get<number>("animationNodeThreshold", DEFAULT_WEBVIEW_CONFIG.animationNodeThreshold),
 		headingDepth: cfg.get<number>("headingDepth", DEFAULT_WEBVIEW_CONFIG.headingDepth),
 		layoutMode: cfg.get<MindMapWebviewConfig["layoutMode"]>("layoutMode", DEFAULT_WEBVIEW_CONFIG.layoutMode),
+		showRelations: cfg.get<boolean>("showRelations", DEFAULT_WEBVIEW_CONFIG.showRelations),
 	};
 }
 
@@ -139,6 +192,15 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 		// intercepted chord above rather than assuming either is free.
 		const toggleStatusDoneCommand = registerRoutedCommand("mindmapView.toggleStatusDone", "toggleStatusDone");
 		const statusQuickPickCommand = registerRoutedCommand("mindmapView.statusQuickPick", "statusQuickPick");
+		// Phase C: Ctrl/Cmd+Shift+G ("Go to note section" keyboard equivalent
+		// of the existing context-menu action, reference `7578f31`). Ctrl+Shift+G
+		// is VS Code's own default binding for "Show Source Control" — the same
+		// class of collision Ctrl+Shift+B (rebalance) and Ctrl+Shift+D/I
+		// (status badges) already had — so this is routed the same
+		// conservative way rather than assumed free; the scoped `when` clause
+		// (package.json) wins over the global default while a mind map editor
+		// is active, same precedent as those three.
+		const goToNoteSectionCommand = registerRoutedCommand("mindmapView.goToSection", "goToNoteSection");
 
 		// Ctrl/Cmd+M toggle (R20): two commands, two keybindings with
 		// complementary `when` clauses (package.json) — one fires while a
@@ -169,6 +231,7 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 			toggleFoldCommand,
 			toggleStatusDoneCommand,
 			statusQuickPickCommand,
+			goToNoteSectionCommand,
 			toggleToTextCommand,
 			toggleToMindMapCommand
 		);
@@ -314,7 +377,18 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 
 		const messageSubscription = webview.onDidReceiveMessage(
-			(msg: { type?: string; text?: string; kind?: string; target?: string; line?: number; nodeId?: string; id?: number; mimeType?: string; dataBase64?: string }) => {
+			(msg: {
+				type?: string;
+				text?: string;
+				kind?: string;
+				target?: string;
+				line?: number;
+				nodeId?: string;
+				id?: number;
+				mimeType?: string;
+				dataBase64?: string;
+				path?: string;
+			}) => {
 				// Ready-handshake: the webview script posts "ready" once its
 				// message listener is registered (both on first load and on every
 				// reload after being hidden/revealed) — posting before that risks
@@ -343,6 +417,17 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 					typeof msg.dataBase64 === "string"
 				) {
 					void this.writeImage(document, msg.id, msg.mimeType, msg.dataBase64, webview);
+				} else if (msg?.type === "listMarkdownFiles" && typeof msg.id === "number") {
+					void this.listMarkdownFiles(webview, msg.id, document);
+				} else if (msg?.type === "readForeignDocument" && typeof msg.id === "number" && typeof msg.path === "string") {
+					void this.readForeignDocument(webview, msg.id, msg.path);
+				} else if (
+					msg?.type === "writeForeignDocument" &&
+					typeof msg.id === "number" &&
+					typeof msg.path === "string" &&
+					typeof msg.text === "string"
+				) {
+					void this.writeForeignDocument(webview, msg.id, msg.path, msg.text);
 				}
 			}
 		);
@@ -357,18 +442,58 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 	}
 
 	/**
-	 * Links (R5): a scheme-qualified target (`https://…`) opens in the
-	 * system browser; anything else is a workspace-relative path (a
-	 * wikilink note title, or an `mdlink`'s relative file/attachment path) —
-	 * resolved against the *document's own* directory (there is no
-	 * vault-wide link index to consult, unlike Obsidian's
-	 * `openLinkText`/`getFirstLinkpathDest`) and opened via the built-in
-	 * `vscode.open` command, which picks a sensible editor for whatever it
-	 * resolves to (text, image, binary) on its own.
+	 * Links (R5), fixed per reference `7578f31` ("fix external link
+	 * opening"): a URL (`isUrlTarget` — explicit scheme *or* a bare domain
+	 * like `www.youtube.com`) always opens in the system browser; an
+	 * absolute filesystem path (`isAbsoluteFilesystemPath` — `/…`, `~/…`,
+	 * `C:\…`) opens via the OS; anything else is a workspace-relative
+	 * reference (a wikilink note title, or an `mdlink`'s relative
+	 * file/attachment path), resolved against the *document's own*
+	 * directory (there is no vault-wide link index to consult, unlike
+	 * Obsidian's `openLinkText`/`getFirstLinkpathDest`) and opened via the
+	 * built-in `vscode.open` command, which picks a sensible editor for
+	 * whatever it resolves to (text, image, binary) on its own.
+	 *
+	 * Checked in that order, ahead of the `kind` the link happens to be
+	 * stored as — a URL or absolute path stored as `kind: "wikilink"`
+	 * (typed directly as `[[https://…]]` or `[[/Users/…]]`) must still open
+	 * correctly rather than trying to open/create a workspace file named
+	 * after it (the reference's originally reported bug; this repo's
+	 * pre-Phase-C `openLink` had the same shaped bug — a bare-domain URL,
+	 * or an absolute path, stored as `kind: "wikilink"` fell straight
+	 * through to the `vscode.open`-of-a-workspace-file branch below,
+	 * resolving `path.resolve(docDir, "/Users/…")` — which, since
+	 * `path.resolve` treats an already-absolute second argument as
+	 * authoritative, "accidentally" opened the right file, but a bare
+	 * domain like `www.youtube.com` or a `mailto:` target with no `://`
+	 * would resolve to a nonexistent workspace-relative path instead of
+	 * ever reaching a browser or the OS).
+	 *
+	 * **VS Code-architecture re-derivation, not a copy of the reference's
+	 * fix:** the reference's fix is Electron-`shell`-specific
+	 * (`shell.openExternal`/`shell.openPath`, lazily `require("electron")`'d
+	 * from inside the Obsidian renderer process). This extension's host
+	 * *is* already a Node/Electron-hosted VS Code extension process, but
+	 * `vscode.env.openExternal` is the documented, non-Electron-coupled way
+	 * to reach the same OS-level "open in default handler" behavior for
+	 * both a URL and an absolute file/folder `Uri` — VS Code's own API
+	 * dispatches a `file://` URI to the OS's default app/file-browser
+	 * exactly the way Electron's `shell.openPath` would, so there is no
+	 * need (and no `electron`/`os` module access) to reach for the
+	 * lower-level API the reference used. `~`/`~/…` expansion still needs
+	 * `os.homedir()` (VS Code has no equivalent), which — unlike the
+	 * reference's guarded/optional Electron access — is unconditionally
+	 * available here (this host always runs under Node), so no lazy-require
+	 * guard is needed for it.
 	 */
 	private async openLink(kind: LinkKind, target: string, document: vscode.TextDocument): Promise<void> {
-		if (URL_SCHEME_RE.test(target)) {
-			await vscode.env.openExternal(vscode.Uri.parse(target));
+		if (isUrlTarget(target)) {
+			await vscode.env.openExternal(vscode.Uri.parse(normalizeUrlTarget(target)));
+			return;
+		}
+		if (isAbsoluteFilesystemPath(target)) {
+			const resolved = expandHomePath(target, os.homedir());
+			await vscode.env.openExternal(vscode.Uri.file(resolved));
 			return;
 		}
 		const docDir = path.dirname(document.uri.fsPath);
@@ -440,6 +565,83 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 
 	/** SVG is the one image type whose MIME subtype (`svg+xml`) doesn't match its file extension (`svg`); JPEG's `jpeg` subtype is normalized to the conventional `jpg`. Every other type we accept (`png`/`gif`/`webp`/`bmp`/`avif`) already matches its subtype. */
 	private static readonly IMAGE_EXT_FOR_MIME: Record<string, string> = { jpeg: "jpg", "svg+xml": "svg" };
+
+	/**
+	 * Phase C (R4 cross-document relations) host-side implementation of the
+	 * webview's `ForeignVaultReader`/`ForeignVaultWriter` contracts
+	 * (`webview/sync/foreignRelation.ts`) — the VS Code counterpart of the
+	 * reference's `app.vault` (`getMarkdownFiles`/`cachedRead`/`modify`).
+	 * Three request/response round trips, each keyed by a monotonic id
+	 * (mirroring the existing `writeImage`/`imageWritten` pattern) rather
+	 * than a new message shape:
+	 *
+	 * - "listMarkdownFiles" -> "markdownFilesListed": every `.md` file in
+	 *   the workspace (D6: not frontmatter-filtered), excluding this
+	 *   document itself and `node_modules` (the same minimal exclusion
+	 *   `.vscodeignore` already applies elsewhere in this repo — there is
+	 *   no `.gitignore`-aware ignore walk here, matching `vscode.workspace.
+	 *   findFiles`'s own default behavior of already respecting
+	 *   `files.exclude`/`search.exclude` for the caller's workspace, so a
+	 *   user's own excludes apply for free). Each file's `path` field is
+	 *   its absolute fsPath — stable across a multi-root workspace without
+	 *   needing to disambiguate two folders that happen to share a
+	 *   workspace-relative path, and directly usable as the `id` shape
+	 *   `sync/foreignRelation.ts`'s `resolveRelationTargetsForDocument`
+	 *   already expects ("any id other than CURRENT_DOCUMENT_ID is a vault
+	 *   path").
+	 * - "readForeignDocument" -> "foreignDocumentRead": one-shot read of a
+	 *   file by that same absolute path, decoded as UTF-8 text (`text:
+	 *   null` on any failure — a deleted/renamed/unreadable file since the
+	 *   list was populated).
+	 * - "writeForeignDocument" -> "foreignDocumentWritten": writes `text`
+	 *   back to that path (`vscode.workspace.fs.writeFile`, not a
+	 *   `WorkspaceEdit` — this file is not open as a `TextDocument` in this
+	 *   editor session the way the *current* document is, so there is no
+	 *   live document to route an edit through; a plain fs write is exactly
+	 *   what `commitForeignRelationTarget`'s "re-read fresh, mint an id if
+	 *   needed, write once" flow needs). `ok: false` on any failure — the
+	 *   webview-side caller (once built) is expected to no-op rather than
+	 *   crash, matching `commitForeignRelationTarget`'s own "file changed
+	 *   shape" null-return contract.
+	 *
+	 * None of these three run on any per-keystroke or per-render path —
+	 * only when a user actually opens the relation/link modal and
+	 * interacts with the document/node picker (R4), at most a handful of
+	 * times per modal session.
+	 */
+	private async listMarkdownFiles(webview: vscode.Webview, id: number, document: vscode.TextDocument): Promise<void> {
+		let files: { path: string; basename: string }[] = [];
+		try {
+			const uris = await vscode.workspace.findFiles("**/*.md", "**/node_modules/**");
+			files = uris
+				.filter((u) => u.fsPath !== document.uri.fsPath)
+				.map((u) => ({ path: u.fsPath, basename: path.parse(u.fsPath).name }));
+		} catch {
+			files = [];
+		}
+		void webview.postMessage({ type: "markdownFilesListed", id, files });
+	}
+
+	private async readForeignDocument(webview: vscode.Webview, id: number, filePath: string): Promise<void> {
+		let text: string | null = null;
+		try {
+			const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
+			text = Buffer.from(bytes).toString("utf8");
+		} catch {
+			text = null;
+		}
+		void webview.postMessage({ type: "foreignDocumentRead", id, text });
+	}
+
+	private async writeForeignDocument(webview: vscode.Webview, id: number, filePath: string, text: string): Promise<void> {
+		let ok = true;
+		try {
+			await vscode.workspace.fs.writeFile(vscode.Uri.file(filePath), Buffer.from(text, "utf8"));
+		} catch {
+			ok = false;
+		}
+		void webview.postMessage({ type: "foreignDocumentWritten", id, ok });
+	}
 
 	/**
 	 * Clipboard-image paste (moved from M3 into M4, see PROGRESS.md/

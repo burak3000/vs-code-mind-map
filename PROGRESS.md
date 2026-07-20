@@ -8,7 +8,7 @@ Implementation is done by a Sonnet 5 agent, milestone by milestone, with a
 review gate after each milestone; performance trade-offs are decided by the
 user, never by the agent (rule 3).
 
-_Last updated: 2026-07-20 (Phase A of the post-M5 catch-up completed — platform-free core re-synced to the reference's current state, which has gained node relations, status badges, and bug fixes since the M0 port point; new features land dormant, wired in Phases B–D below)._
+_Last updated: 2026-07-20 (Phase C of the post-M5 catch-up: node relations wired live to VS Code UI/host — settings, render-loop, cross-doc badge click, external-link-open fix, cross-document host data access — except the relation-authoring modal redesign, escalated to the coordinating instance rather than decided unilaterally; see PROGRESS.md's dated Phase C section and DECISIONS.md)._
 
 ## Milestone status
 
@@ -32,8 +32,8 @@ same way the milestones were:
 | Phase | Scope | Status |
 |---|---|---|
 | A | Re-sync the platform-free core (`model/layout/render/sync/controller` + `webview/ui/InlineEditor.ts`) to the reference's current state; port new/updated tests; keep the build green with new features dormant | **Done** |
-| B | Status badges: VS Code wiring (keyboard shortcuts, context-menu items, click handlers) | Pending |
-| C | Node relations: VS Code wiring (redesigned relation modal/combobox, cross-document host-side file reader, `showRelations` setting, styles, external-link-opening fix, center-into-view UX fixes) | Pending |
+| B | Status badges: VS Code wiring (keyboard shortcuts, context-menu items, click handlers) | **Done** |
+| C | Node relations: VS Code wiring (redesigned relation modal/combobox, cross-document host-side file reader, `showRelations` setting, styles, external-link-opening fix, center-into-view UX fixes) | **Partially done, one escalation open** — see below |
 | D | Docs (XMind-trademark scrub, README/CHANGELOG updates), re-benchmark with features live, re-package | Pending |
 
 ## M0 — done
@@ -478,6 +478,77 @@ summary:
   text is now part of `textContent`) — same "fix the test to the new,
   correct shape" discipline as Phase A's link-click-semantics fix, not a
   weakened assertion.
+- Not committed — left for the user, same as every phase so far.
+
+## Phase C — partially done (post-M5 catch-up: node relations VS Code wiring), one escalation open
+
+Wired the platform-free relations support Phase A ported dormant to actual
+VS Code UI/host behavior, except the relation-authoring modal itself
+(escalated — see below). Reference commits `4c7d178`/`f58b3c1`/`7578f31`.
+Full reasoning in DECISIONS.md's dated "Phase C" entry; summary:
+
+- **`showRelations` setting:** `contributes.configuration` entry,
+  `MindMapWebviewConfig`/`setConfig` extended (not a parallel channel),
+  baked into `SvgRenderer`'s constructor at buildFromScratch time — same
+  next-open-only treatment as `layoutMode`/`headingDepth`/
+  `animationNodeThreshold` (M4 precedent, not re-litigated).
+- **Resolving/rendering relations, live:** `resolveRelations` wired into
+  `buildFromScratch`/`onChange`/`rebuildFromExternalText`, `activeRelations`
+  passed into `SvgRenderer.mount`/`.update`. `bench:relations` re-run with
+  this actually live — both fixture sizes clear every budget (see
+  benchmarks.md). Arrow/cross-doc-badge CSS added to `media/mindmap.css`
+  (`--vscode-*`-only, M4 convention) — it existed in `SvgRenderer` since
+  Phase A but had no styling at all until now.
+- **Cross-document badge click:** opens the target via the existing
+  `openLink` round trip (matches the reference's own
+  `openCrossDocRelation`, which calls `openLink`, not the "Go to section"
+  beside-column mechanism — that one's for jumping within the *current*
+  document).
+- **External link opening fix:** re-derived for this repo's architecture,
+  not copied — `MindMapEditorProvider.openLink` now classifies a link
+  target by its *shape* (URL/bare-domain, absolute filesystem path, or
+  workspace-relative reference) via host-side duplicates of `webview/
+  model/links.ts`'s `isUrlTarget`/`normalizeUrlTarget`/
+  `isAbsoluteFilesystemPath`/`expandHomePath`, using `vscode.env.
+  openExternal` for both the URL and absolute-path cases (VS Code's
+  documented equivalent of Electron's `shell.openExternal`/`openPath`,
+  used directly rather than reaching for a lower-level Electron API this
+  host doesn't need).
+- **Ctrl/Cmd+Shift+G** ("Go to note section" keyboard equivalent): routed
+  as a command (`mindmapView.goToSection` -> `"goToNoteSection"`), same
+  conservative VS Code-default-collision handling as every other Shift-
+  chord this project has added (collides with "Show Source Control").
+- **Cross-document host-side data access, built ahead of the modal:**
+  three new message pairs in `MindMapEditorProvider.ts`
+  (`listMarkdownFiles`/`readForeignDocument`/`writeForeignDocument`),
+  following the exact request/response-by-id shape `resolveImage`/
+  `writeImage` already established — the VS Code implementation of
+  `sync/foreignRelation.ts`'s `ForeignVaultReader`/`ForeignVaultWriter`
+  contracts. Not yet called from anywhere (the modal that would call them
+  isn't built), but ready regardless of which UI approach the modal ends
+  up using.
+- **Escalated, not built: the relation/link modal redesign** (reference
+  `7578f31`, 436-line `LinkModal.ts` diff) and its searchable-combobox
+  predecessor (`f58b3c1`). The task's own guardrail flagged this as a
+  genuine platform-fit fork — VS Code has a native `showQuickPick` API that
+  could serve the "pick a document, then a node in it" searchable two-step
+  picker, as an alternative to extending this repo's existing plain-DOM-
+  overlay family (InlineEditor/SearchPanel/LinkModal/ContextMenu). Per
+  instruction, this was surfaced to the coordinating instance as a question
+  rather than decided unilaterally — see DECISIONS.md and the task-level
+  report. **Net effect:** a document with pre-existing `[[#^id]]` relation
+  syntax renders/resolves/opens correctly end-to-end; there is no UI path
+  yet to *author* a new relation by interacting with the map —
+  `webview/ui/LinkModal.ts` is unchanged (still the pre-Phase-C single-
+  link-edit form).
+- **No core files touched:** `webview/{model,layout,render,sync,
+  controller}` re-confirmed byte-identical to reference HEAD
+  (`SvgRenderer.ts`'s divergence still exactly the pre-existing M5
+  `getViewport`/`setViewport` pair).
+- **Tests:** 484 passed / 0 skipped (36 files, same count as Phase B — this
+  phase's wiring is covered by existing module-level relations/renderer/
+  config suites; two `mindMapEditorProvider.test.ts` assertions updated for
+  the new `showRelations: true` field in `setConfig`'s payload).
 - Not committed — left for the user, same as every phase so far.
 
 ## Decisions taken so far

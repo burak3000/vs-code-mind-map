@@ -137,6 +137,52 @@ body {
 	transition: transform 150ms ease;
 }
 
+/* Phase C (R1a): same-document relation arrows — deliberately NOT
+   branch-palette-colored (unlike .mm-edge below) and visually thin/dashed
+   so a relation reads as a cross-link, not a hierarchy edge. Cheap stroked
+   cubic-Bezier, not a filled tapered ribbon like .mm-edge. The reference
+   plugin's faint-text token maps onto this file's established muted-text
+   mapping, the same one already used for search/context-menu secondary
+   text. */
+.mm-relation {
+	fill: none;
+	stroke: var(--vscode-descriptionForeground);
+	stroke-width: 1.5;
+	stroke-dasharray: 4 3;
+	opacity: 0.75;
+	pointer-events: none;
+}
+
+.mm-relation-arrowhead-path {
+	fill: var(--vscode-descriptionForeground);
+}
+
+/* Phase C (R2): cross-document relation indicator — a small badge at the
+   node's outer-top corner, distinct from the fold badge (which sits
+   vertically centered at the node's *inner*/near edge — see
+   .mm-fold-badge below) and the status badge (opposite corner). The
+   reference plugin's border/accent/muted-text tokens map onto this file's
+   established editorWidget-border/focusBorder/description mappings, same
+   as everywhere else in this file. */
+.mm-cross-doc-badge {
+	cursor: pointer;
+}
+
+.mm-cross-doc-badge circle {
+	fill: var(--vscode-editorWidget-border, var(--vscode-panel-border));
+}
+
+.mm-cross-doc-badge:hover circle {
+	fill: var(--vscode-focusBorder);
+}
+
+.mm-cross-doc-badge text {
+	fill: var(--vscode-descriptionForeground);
+	font-size: 9px;
+	pointer-events: none;
+	user-select: none;
+}
+
 .mm-edge.mm-color-c0 { fill: var(--mm-color-c0); }
 .mm-edge.mm-color-c1 { fill: var(--mm-color-c1); }
 .mm-edge.mm-color-c2 { fill: var(--mm-color-c2); }

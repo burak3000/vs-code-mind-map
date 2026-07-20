@@ -1596,3 +1596,198 @@ badge) — this phase only adds code paths that run on an explicit,
 infrequent user action (a shortcut press, a right-click, a badge click),
 each a one-time DOM-overlay construction of the same order of cost as the
 existing `ContextMenu`/`goToNoteSection` interactions. No dependency added.
+
+## 2026-07-20 — Phase C: relations wired live (settings, render-loop wiring, cross-doc badge click, external-link-open fix); modal redesign escalated
+
+**Context:** Phase A re-synced the platform-free relations logic
+(`model/relations.ts`'s `resolveRelations`/`listNodeLinkItems`,
+`sync/foreignRelation.ts`'s `ForeignVaultReader`/`ForeignVaultWriter`
+contracts + `resolveRelationTargetsForDocument`/`commitForeignRelationTarget`,
+`SvgRenderer`'s relation-arrow/cross-doc-badge rendering + `showRelations`
+constructor param) but built no VS Code UI at all — relations were fully
+dormant (`webview/main.ts` never called `resolveRelations` or passed
+`activeRelations`/`showRelations` anywhere real). This phase wires
+everything that does *not* depend on how the relation-authoring modal ends
+up being built, and stops short of the modal itself — see the escalation
+below.
+
+**`showRelations` setting — live-vs-next-open treatment:** followed the
+precedent M4 already established for `layoutMode`/`headingDepth`/
+`animationNodeThreshold`: baked into `SvgRenderer`'s constructor at
+`buildFromScratch` time, not applied to an already-mounted renderer.
+Not re-litigated as a fresh question because the *reason* is identical —
+`SvgRenderer`'s own doc comment for the `showRelations` param (ported
+verbatim in Phase A) already states the intent: "when false,
+`updateRelations` never runs and `relationsG` stays permanently empty —
+'no arrows/relation layer work happens' at all, not just hidden via CSS."
+Rebuilding that live would mean either (a) tearing down and remounting the
+whole renderer on a settings change (the same cost as opening a fresh map,
+for a rarely-toggled setting), or (b) adding a second, narrower "toggle
+relations layer" method to the protected renderer — both disproportionate
+to a setting nobody is shown to need at cadence faster than "next open."
+`package.json`'s description says so explicitly ("Takes effect the next
+time a map is opened"), matching the other three settings' wording.
+
+**`resolveRelations` wired into the render loop (the one perf checkpoint
+this phase must clear):** added to `buildFromScratch`/`onChange`/
+`rebuildFromExternalText` in the exact position the reference's
+`MindMapView` puts it — after layout, before `ensurePersistentIds`/
+`serializeMindMap` (both depend on the `isRelationTarget` flags
+`resolveRelations` sets, per that function's own doc comment: a same-doc
+relation's target must keep its `^blockid` suffix across serialize).
+`bench:relations`, re-run with this wiring actually in place, shows both
+fixture sizes still comfortably inside every relevant budget (open:
+31.0ms/41.6ms vs. 1000ms/2000ms; Tab-edit: 15.9ms/27.4ms vs. the 50ms
+target/100ms ceiling; a relation-source rename: 14.1ms/30.7ms, same
+budget) — see benchmarks.md's dated "Phase C" entry for the full numbers.
+**No performance trade-off to escalate:** the benchmark script itself
+already called `resolveRelations`/`mount`/`update` directly since Phase A
+(it exercises the ported core modules, not `webview/main.ts`), so this
+phase's wiring doesn't change what the script measures — it only makes
+real interactive usage exercise a path that used to be dead code. Nothing
+here required touching `model/relations.ts`'s own hot-path discipline
+(the two-pass walk, the per-node link-cache fast path) — it was already
+built to run every `onChange`, this phase just started actually calling it
+there.
+
+**Cross-document badge click:** `SvgRenderer.setCrossDocBadgeClickHandler`
+wired to a new `openCrossDocRelation(nodeId)` in `webview/main.ts` — finds
+the node's first `resolvedRelations` entry with `kind === "cross-doc"` and
+opens it via the *existing* `openLink` host round trip (same message the
+reference's `MindMapView.openCrossDocRelation` reuses, per the task's
+guidance to match its actual behavior rather than reusing "Go to
+section"'s beside-column mechanism, which is for jumping to a location
+*within the current document*, not opening a different one — cross-doc
+relations are exactly the `openLink` case, since Obsidian's own
+`openCrossDocRelation` calls `this.openLink`, not `goToNoteSection`).
+
+**External link opening fix (reference `7578f31`) — re-derived for this
+repo's host-round-trip architecture, not copied:** the reference's bug was
+Obsidian-specific in its *symptom* (a URL/absolute path stored with
+`kind: "wikilink"` tried to create/open a vault note named after it) but
+the underlying issue — deciding how to open a link by inspecting its
+*target's shape* (URL vs. absolute path vs. relative reference) instead of
+trusting whatever `kind` it happened to be stored as — applies identically
+here. Confirmed this repo's pre-Phase-C `MindMapEditorProvider.openLink`
+had the same *shape* of bug (though usually silently self-correcting for
+absolute paths, since `path.resolve(docDir, "/Users/…")` treats an
+absolute second argument as authoritative and "accidentally" opens the
+right file) but definitely broken for a bare-domain URL (`www.example.com`,
+no `://`) or a `mailto:`-less scheme-free link, which fell straight
+through to the workspace-relative-file branch and resolved to a
+nonexistent path. Fixed by adding host-side (Node) duplicates of the
+webview's `isUrlTarget`/`normalizeUrlTarget`/`isAbsoluteFilesystemPath`/
+`expandHomePath` (`webview/model/links.ts`, already ported byte-identical
+in Phase A) to `MindMapEditorProvider.ts` — duplicated rather than
+imported, for the same two-tsconfig reason this file's pre-existing
+`LinkKind`/`URL_SCHEME_RE` are already duplicated (that module compiles
+against the browser-lib tsconfig; this file is the Node-side host). The
+actual *open* mechanism differs from the reference by necessity: Obsidian
+lazily `require("electron")`s `shell.openExternal`/`shell.openPath`
+(guarded, since Obsidian mobile has no Electron underneath); this
+extension's host is a VS Code extension process, which exposes the same
+"open with the OS's default handler" capability through the documented,
+non-Electron-coupled `vscode.env.openExternal(uri)` API for both a URL
+*and* an absolute `file://` URI (VS Code dispatches a local file/folder
+URI to the OS default app/file-browser the same way `shell.openPath`
+would) — so there was no need to reach for Electron directly, and no mobile
+guard is needed (this host always runs under Node/Electron-hosted VS
+Code, unlike Obsidian's mobile target). `~`/`~/…` expansion still needs
+`os.homedir()`, imported directly (unconditionally available here, unlike
+the reference's guarded/optional access).
+
+**Ctrl/Cmd+Shift+G ("Go to note section" keyboard equivalent, reference
+`7578f31`):** routed as a `contributes.keybindings` command
+(`mindmapView.goToSection` -> a `"goToNoteSection"` `CommandMessage`,
+distinct from the pre-existing `"goToSection"` *host* message the webview
+already sends when the user picks it from the context menu — kept as two
+different names specifically so they aren't confused with each other),
+rather than a plain webview keydown — Ctrl/Cmd+Shift+G is VS Code's own
+default binding for "Show Source Control," the same class of collision
+Ctrl/Cmd+Shift+B (rebalance) and Ctrl/Cmd+Shift+D/I (status badges)
+already had, so it's routed the same conservative way per the established
+precedent rather than assumed free.
+
+**Host support for cross-document (R4) data access — built ahead of the
+modal, since the modal needs it regardless of which UI it ends up using:**
+three new request/response message pairs in `MindMapEditorProvider.ts`,
+following the exact shape already established by `resolveImage`/
+`imageResolved` and `writeImage`/`imageWritten` (a monotonic request id,
+never a new message-passing pattern, per the task's explicit guidance):
+`listMarkdownFiles`/`markdownFilesListed` (enumerates every `.md` file in
+the workspace via `vscode.workspace.findFiles('**/*.md', '**/node_modules/**')`,
+excluding the current document — this repo has no `.gitignore`-aware
+`.md` file-exclusion convention beyond `node_modules` to mirror, and
+`findFiles` already applies the user's own `files.exclude`/`search.exclude`
+settings for free, matching the task's "at minimum excluding node_modules"
+floor), `readForeignDocument`/`foreignDocumentRead` (one-shot UTF-8 read
+of an arbitrary workspace `.md` file by absolute path — the VS Code
+counterpart of `ForeignVaultReader.cachedRead`), and
+`writeForeignDocument`/`foreignDocumentWritten` (a plain
+`vscode.workspace.fs.writeFile`, not a `WorkspaceEdit` — a foreign file
+generally isn't open as a live `TextDocument` in this editor session the
+way the *current* document is, so there is no document to route an edit
+through; this matches `commitForeignRelationTarget`'s own "re-read fresh,
+mint an id if needed, write once" one-off I/O shape). Every foreign file
+is identified by its absolute fsPath (not a workspace-relative path) —
+avoids any multi-root-workspace ambiguity, and slots directly into
+`sync/foreignRelation.ts`'s existing "any id other than
+`CURRENT_DOCUMENT_ID` is a vault path" contract with no changes to that
+file. None of these three run on any per-keystroke/per-render path — only
+when a user opens the relation modal and interacts with the document/node
+picker, per CLAUDE.md rule 3's own workspace-scanning cost question (not
+escalated as a *live* rule-3 trade-off, since it's a one-time,
+user-initiated, bounded-by-workspace-size operation, not a hot path — but
+noted here since the task specifically flagged it as a candidate).
+
+**Escalated, not built — the relation/link modal redesign itself (reference
+`7578f31`'s `LinkModal.ts`, 436 lines changed) and its searchable-combobox
+predecessor (`f58b3c1`):** the task's own guardrail calls this out as a
+genuine platform-fit fork requiring the user's steer before building: VS
+Code has a native `showQuickPick`/`showInputBox` API that could serve the
+"pick a document, then pick a node in it" two-step search-as-you-type flow
+the reference's hand-rolled plain-DOM combobox implements, as an
+alternative to extending this repo's own established plain-DOM-overlay
+family (InlineEditor/SearchPanel/LinkModal/ContextMenu — all built as
+`Modal`/`Menu`-replacement overlays specifically because VS Code has no
+webview-embedded equivalent of those Obsidian classes, per this repo's own
+established convention). Unlike the M3-era "no VS Code equivalent exists"
+default that justified the *original* single-edit `LinkModal.ts`, a
+QuickPick genuinely could exist here and might be a *better* fit for a
+searchable list than reproducing the reference's hand-rolled filtering —
+but it would also mean the picker leaves the webview's own DOM (rendered
+by VS Code itself, not glued to the node/map the way every other overlay
+in this app is), and the round trip shape (webview posts "open a picker",
+host shows a native QuickPick, host posts back the choice) is a new
+message pattern this repo hasn't needed before. Per the task's explicit
+instruction to stop rather than default to either approach, this decision
+was surfaced to the coordinating instance rather than guessed — see the
+task-level report for the question as posed and the two options'
+trade-offs. **Net effect:** resolving/rendering a relation that already
+exists in a document's markdown source works end-to-end (arrows, cross-doc
+badges, click-to-open, the `showRelations` toggle); there is currently no
+UI path to *author* a new relation by clicking through the mind map —
+`webview/ui/LinkModal.ts` is unchanged from its pre-Phase-C single-link-edit
+form this phase. This is flagged as a real functional gap in PROGRESS.md
+and benchmarks.md's real-window checklist, not silently left implicit.
+
+**Verification:** `npm run build` clean; `npm test` — 36 files, 484 tests,
+0 failed, 0 skipped (unchanged count from Phase B — this phase's wiring is
+exercised by the existing module-level relations/renderer/config test
+suites; two `mindMapEditorProvider.test.ts` assertions updated for the new
+`showRelations: true` field in the posted `setConfig` payload, the same
+"assert the new, correct shape" treatment as every prior phase's
+config-shape churn, not a weakened check). `diff -rq webview/{model,
+layout,sync,controller}` against reference HEAD `src/{...}`: still
+byte-identical; `render/SvgRenderer.ts` still differs only by the
+pre-existing M5 `getViewport`/`setViewport` pair — 0 lines touched by this
+phase (only `webview/main.ts`, `src/MindMapEditorProvider.ts`,
+`package.json`, and `media/mindmap.css` changed).
+
+**Cost:** the one real per-edit cost this phase adds — `resolveRelations`
+running on every `onChange`/mount/rebuild instead of never — is exactly
+the cost Phase A's own DECISIONS.md entry flagged as "worth re-measuring
+once wired," and `bench:relations`'s re-run (see benchmarks.md) confirms
+it clears every budget with room to spare. The three new foreign-document
+message handlers add zero cost to any existing path (they're unreachable
+until the still-unbuilt modal calls them). No new dependency introduced.

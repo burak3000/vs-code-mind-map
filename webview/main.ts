@@ -53,6 +53,7 @@ import { parseExternalPaste } from "./sync/parseExternalPaste";
 import { LinkKind, getSoleLink, buildLinkText, getImageEmbed } from "./model/links";
 import { MindNode } from "./model/types";
 import { BADGE_DEFS } from "./model/statusBadges";
+import { resolveRelations } from "./model/relations";
 
 /** Minimal typing for the API VS Code injects into every webview. Declared here instead of adding a @types/vscode-webview devDependency for one function signature. */
 interface VsCodeWebviewApi {
@@ -82,7 +83,7 @@ interface SetDocumentMessage {
  */
 interface CommandMessage {
 	type: "command";
-	name: "undo" | "redo" | "search" | "rebalance" | "linkEditor" | "toggleFold" | "toggleStatusDone" | "statusQuickPick" | "flushWrite";
+	name: "undo" | "redo" | "search" | "rebalance" | "linkEditor" | "toggleFold" | "toggleStatusDone" | "statusQuickPick" | "goToNoteSection" | "flushWrite";
 }
 
 /**
@@ -121,6 +122,8 @@ interface MindMapWebviewConfig {
 	animationNodeThreshold: number;
 	headingDepth: number;
 	layoutMode: LayoutMode;
+	/** Phase C (R1a item 5): whether `SvgRenderer` resolves/draws relation arrows and cross-doc badges at all — baked into the renderer's constructor at `buildFromScratch` time, like `animationNodeThreshold`, so a mid-session toggle takes effect only on the next open (see DECISIONS.md's dated "Phase C" entry). */
+	showRelations: boolean;
 }
 
 /** Same values as the reference's `DEFAULT_SETTINGS` / this extension's `package.json` defaults — used until the host's first "setConfig" arrives (always before the first "setDocument", but defensive in case that guarantee is ever broken). */
@@ -129,6 +132,7 @@ const DEFAULT_CONFIG: MindMapWebviewConfig = {
 	animationNodeThreshold: 500,
 	headingDepth: DEFAULT_SERIALIZE_CONFIG.headingDepth,
 	layoutMode: DEFAULT_LAYOUT_CONFIG.mode,
+	showRelations: true,
 };
 
 /** A scheme-qualified URL (`https://…`, not a workspace-relative path) — an image embed whose target matches this resolves synchronously to itself (same as a link click's split — see `openLink`/`MindMapEditorProvider.ts`'s identical regex), no host round trip needed. */
@@ -382,6 +386,8 @@ class MindMapApp implements ControllerListener {
 			if (this.controller.selectedId) this.controller.toggleStatusBadge(this.controller.selectedId, "done");
 		} else if (name === "statusQuickPick") {
 			if (this.controller.selectedId) this.showStatusQuickPick(this.controller.selectedId);
+		} else if (name === "goToNoteSection") {
+			if (this.controller.selectedId) this.goToNoteSection(this.controller.selectedId);
 		}
 	}
 
@@ -455,6 +461,11 @@ class MindMapApp implements ControllerListener {
 		assignMissingColors(model.root);
 		assignMissingSides(model.root);
 		computeLayout(model.root, this.layoutConfig);
+		// R1a/R2: classify every node's links before the first mount, so
+		// relation arrows and cross-doc badges are present from the very
+		// first paint, not just after the first edit — mirrors the
+		// reference's MindMapView.buildFromScratch.
+		const activeRelations = resolveRelations(model, this.title);
 
 		this.controller = new Controller(model);
 		this.controller.addListener(this);
@@ -462,7 +473,7 @@ class MindMapApp implements ControllerListener {
 		this.lastWrittenText = text;
 
 		this.renderer?.destroy();
-		this.renderer = new SvgRenderer(this.container, this.config.animationNodeThreshold, this.layoutConfig);
+		this.renderer = new SvgRenderer(this.container, this.config.animationNodeThreshold, this.layoutConfig, this.config.showRelations);
 		this.renderer.setNodeClickHandler((id, evt) => {
 			if (evt.ctrlKey || evt.metaKey) this.controller?.toggleSelection(id);
 			else if (evt.shiftKey) this.controller?.selectRange(id);
@@ -472,6 +483,7 @@ class MindMapApp implements ControllerListener {
 		this.renderer.setBackgroundClickHandler(() => this.controller?.select(null));
 		this.renderer.setBadgeClickHandler((id) => this.controller?.toggleFold(id));
 		this.renderer.setStatusBadgeClickHandler((id) => this.showStatusQuickPick(id));
+		this.renderer.setCrossDocBadgeClickHandler((id) => this.openCrossDocRelation(id));
 		this.renderer.setNodeContextMenuHandler((id, evt) => this.showNodeMenu(id, evt));
 		this.renderer.setLinkClickHandler((kind, target) => this.openLink(kind, target));
 		this.renderer.setImageClickHandler((kind, target) => this.openImage(kind, target));
@@ -479,7 +491,7 @@ class MindMapApp implements ControllerListener {
 		this.renderer.setManualMoveHandler((id, pos) => this.controller?.setManualPosition(id, pos));
 		this.renderer.setReorderHandler((id, targetId, position) => this.controller?.moveNode(id, targetId, position));
 		this.renderer.setManualWidthHandler((id, width) => this.controller?.setManualWidth(id, width));
-		this.renderer.mount(model);
+		this.renderer.mount(model, activeRelations);
 		this.restoreViewState();
 	}
 
@@ -519,6 +531,7 @@ class MindMapApp implements ControllerListener {
 		assignMissingColors(newModel.root);
 		assignMissingSides(newModel.root);
 		computeLayout(newModel.root, this.layoutConfig);
+		const activeRelations = resolveRelations(newModel, this.title);
 
 		let newSelectedId: string | null = null;
 		const oldSelectedNode = oldSelectedId ? oldModel.byId.get(oldSelectedId) : undefined;
@@ -532,7 +545,7 @@ class MindMapApp implements ControllerListener {
 		this.controller = new Controller(newModel);
 		this.controller.selectedId = newSelectedId;
 		this.controller.addListener(this);
-		this.renderer.mount(newModel);
+		this.renderer.mount(newModel, activeRelations);
 		this.renderer.selectNode(newSelectedId);
 		this.persistState();
 	}
@@ -545,6 +558,16 @@ class MindMapApp implements ControllerListener {
 		assignMissingColors(this.controller.model.root);
 		assignMissingSides(this.controller.model.root);
 		computeLayout(this.controller.model.root, this.layoutConfig);
+		// R1a/R2: re-classify every node's links against the now-current tree
+		// (a rename/delete/undo can change which block ids exist) *before*
+		// ensurePersistentIds/serialize, since both depend on the
+		// `isRelationTarget` flags this sets (R1a item 2 — forces a
+		// relation's target to keep its block-id suffix across serialize).
+		// See model/relations.ts's own doc comment for why this walk is
+		// cheap despite running on every change, not just relation edits —
+		// re-confirmed live by `bench:relations` now that this actually runs
+		// every onChange (see benchmarks.md).
+		const activeRelations = resolveRelations(this.controller.model, this.title);
 		// Deliberately reordered vs. the reference's onChange (which calls
 		// ensurePersistentIds *after* update()/setSelection()) — see
 		// `reconcilePersistentIds`'s own comment for why: doing it first
@@ -553,7 +576,7 @@ class MindMapApp implements ControllerListener {
 		// instead of a stale id surviving until some later unrelated remount
 		// quietly "fixes" it.
 		this.reconcilePersistentIds();
-		this.renderer.update(this.controller.model);
+		this.renderer.update(this.controller.model, activeRelations);
 		this.renderer.setSelection(this.controller.selectedIds, this.controller.selectedId);
 		this.data = serializeMindMap(this.controller.model, this.serializeConfig);
 		this.scheduleWrite();
@@ -729,6 +752,22 @@ class MindMapApp implements ControllerListener {
 
 	private openImage(kind: LinkKind, target: string): void {
 		this.vscode.postMessage({ type: "openLink", kind, target });
+	}
+
+	/**
+	 * R2: clicking a node's cross-document badge opens its first cross-doc
+	 * relation target via the same host round trip a regular link click
+	 * uses (`openLink`) — reused rather than reinvented, mirroring the
+	 * reference's `openCrossDocRelation`. A node with several cross-doc
+	 * relations (rare) only opens the first — a picker for that case is
+	 * outside the minimum badge+click design (D3).
+	 */
+	private openCrossDocRelation(nodeId: string): void {
+		if (!this.controller) return;
+		const node = this.controller.model.byId.get(nodeId);
+		const relation = node?.resolvedRelations?.find((r) => r.kind === "cross-doc");
+		if (!relation) return;
+		this.openLink(relation.linkKind, relation.rawTarget);
 	}
 
 	private openLinkEditor(nodeId: string): void {
