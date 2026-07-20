@@ -873,7 +873,7 @@ phase is considered done in practice, in a real F5 window:
   level round trip is covered by `statusBadgePersistence.test.ts`, but that
   test doesn't paint pixels).
 
-## Phase C — relations wired live (settings, resolveRelations in the render loop, cross-doc badge click, external-link-open fix); modal redesign escalated, not built
+## Phase C — done: relations wired live (settings, resolveRelations in the render loop, cross-doc badge click, external-link-open fix) plus the redesigned relation/link modal (QuickPick-driven picker, user-decided)
 
 Scope actually completed this phase (see DECISIONS.md's dated "Phase C"
 entry for full reasoning): the `showRelations` setting (`package.json`,
@@ -893,51 +893,65 @@ correctly regardless of the link's stored `kind`) applied host-side in
 implementation of `ForeignVaultReader`/`ForeignVaultWriter`'s data-access
 needs), ready for whichever UI the relation-authoring modal ends up using.
 
-**Not built this phase, escalated instead (see DECISIONS.md and the
-task-level report):** the redesigned relation/link modal itself (reference
-`7578f31`) — same-document relation *authoring* is still unavailable from
-the UI (resolving/rendering *pre-existing* `[[#^id]]` syntax in a document
-works end-to-end; there is no way yet to create one by clicking through
-the UI). This is a real functional gap, not a perf or correctness one —
-flagged rather than silently left implicit.
+**Also completed, closing the one remaining piece of Phase C (see
+DECISIONS.md's second dated "Phase C" entry for full reasoning):** the
+redesigned relation/link modal (reference `7578f31`) — `webview/ui/
+LinkModal.ts` rebuilt as an item-list + radio-gated add-flow modal
+(*Document relation* / *Link*), with the "pick a document, then a node in
+it" target picker driven by VS Code's native `showQuickPick` (user
+decision, resolving the platform-fit fork this phase originally
+escalated) rather than a hand-rolled plain-DOM combobox. One new generic
+host round trip (`showQuickPick`/`quickPickResult`) plus reuse of the
+already-built `listMarkdownFiles`/`readForeignDocument`/
+`writeForeignDocument` primitives from earlier in this phase. Same-document
+relation *authoring* now works end-to-end from the UI (Ctrl/Cmd+K ->
+"Document relation" -> pick document -> pick node), alongside the
+already-working resolve/render/click-to-open of pre-existing relations.
 
-### `npm run bench:relations` — re-run with relations now actually live
+### `npm run bench:relations` — re-run with relations live, then again after adding the modal/QuickPick flow
 
 ```
-2000 nodes, 200 relations: open(parse+layout=18.7ms resolve=1.0ms mount=5.2ms
-total=31.0ms OK) Tab=15.9ms OK rename(relation source)=14.1ms OK
-pan-dispatch=3.1ms serialize=1.2ms
+2000 nodes, 200 relations: open(parse+layout=18.8ms resolve=1.0ms mount=4.9ms
+total=30.4ms OK) Tab=15.0ms OK rename(relation source)=14.0ms OK
+pan-dispatch=3.0ms serialize=1.2ms
   round-trip check: serialized text contains all 200 relation links: true
 5000 nodes, 500 relations: open(parse+layout=36.2ms resolve=1.4ms mount=2.8ms
-total=41.6ms OK) Tab=27.4ms OK rename(relation source)=30.7ms OK
-pan-dispatch=0.2ms serialize=1.5ms
+total=41.3ms OK) Tab=28.3ms OK rename(relation source)=30.2ms OK
+pan-dispatch=0.2ms serialize=1.4ms
   round-trip check: serialized text contains all 500 relation links: true
 ```
 
-Numbers are within noise of Phase A's dormant-baseline run (18.8/30.7/14.9/
-40.8/etc. above) — expected, since this benchmark script already called
-`resolveRelations`/`mount`/`update` directly (it exercises the ported core
-modules, not `webview/main.ts`); wiring `main.ts` to call the same
-functions at the same frequency doesn't change what this script measures,
-only that real interactive usage now actually exercises this path instead
-of it being dead code. Both fixtures comfortably clear every relevant
-budget: open (31.0ms/41.6ms vs. 1000ms/2000ms budgets for 2k/5k), Tab-edit
-(15.9ms/27.4ms vs. the 50ms target / 100ms hard ceiling), a rename that
-changes a relation's source text (14.1ms/30.7ms, same budget). **No
-performance trade-off to escalate** — this is the one mandatory perf
-checkpoint for this phase, and it clears cleanly.
+Numbers are within noise of both the earlier live-wiring run in this same
+section and Phase A's original dormant-baseline run — expected, since
+`bench:relations` exercises the ported core modules directly
+(`resolveRelations`/`mount`/`update`), and the modal/QuickPick flow this
+phase's second piece added runs only behind an explicit "Choose document &
+node…" click, never per-frame or per-keystroke — nothing in this
+benchmark's own code path changed. Both fixtures still comfortably clear
+every relevant budget (open 30.4ms/41.3ms vs. 1000ms/2000ms; Tab-edit
+15.0ms/28.3ms vs. the 50ms target/100ms ceiling; relation-source rename
+14.0ms/30.2ms, same budget). **No performance trade-off to escalate** —
+the one mandatory perf checkpoint for this phase, clearing cleanly on both
+passes.
 
 ### Test suite
 
-**484 passed / 0 skipped** (36 files) — unchanged count from Phase B: this
-phase's wiring changes are covered by re-running the existing
-`webviewConfig.test.ts`/`renderer.smoke.test.ts`/`relationsRenderer.
-test.ts` suites (which already exercised `resolveRelations`/`mount`/
-`update`'s relations parameters end-to-end at the module level) plus two
-adjusted `mindMapEditorProvider.test.ts` assertions for the new
-`showRelations: true` field in the posted `setConfig` payload — not a
-weakened assertion, the same "assert the new, correct shape" treatment as
-every prior phase's config-shape churn.
+**492 passed / 0 skipped** (36 files, up from 484): `test/linkModal.test.ts`
+fully rewritten (10 tests) for the redesigned item-list/add-flow/
+QuickPick-delegation modal shape; `test/webviewBootstrap.test.ts` gained
+two new tests (the "Document relation" add flow driving
+`listMarkdownFiles` + two `showQuickPick` round trips through to a
+committed same-doc relation; cancelling at step 1 as a clean no-op) plus
+one adjusted pre-existing "linkEditor command" test (now exercises "Link"
+mode explicitly, and checks the modal stays open after adding per D7
+rather than the pre-redesign auto-close); `test/mindMapEditorProvider.
+test.ts` gained five new host-side tests directly covering
+`listMarkdownFiles`/`readForeignDocument`/`writeForeignDocument`/
+`showQuickPick` (previously unreachable dead code with zero host-level
+coverage — closed now that a real flow calls them), which required
+extending that file's fake `vscode` module with `workspace.findFiles`/
+`fs.readFile`/`window.showQuickPick` stubs. None of this loosens a prior
+assertion — every changed test asserts the new, correct shape.
 
 ### REMAINING FOR HUMAN — Phase C (add to the consolidated real-window checklist)
 
@@ -964,5 +978,33 @@ wikilink:
   filesystem path link opens in the OS's default app (a file) or file
   browser (a folder); all three cases work regardless of whether the link
   happens to be stored as a wikilink or an mdlink.
-- **Relation *authoring* has no UI path yet** (escalated — see DECISIONS.md
-  and the task report) — nothing to check here until that lands.
+- **The relation/link modal (Ctrl/Cmd+K or the context menu's "Edit
+  link"):** opens showing every existing relation/link on the node with a
+  working Remove button each; the mode radio switches between "Document
+  relation" and "Link" sub-forms.
+- **"Document relation" add flow, same-document target:** clicking "Choose
+  document & node…" pops a native VS Code QuickPick listing "(this
+  document) (current)" first, then every other workspace `.md` file;
+  picking the current document pops a second QuickPick of every other node
+  in the map (searchable by typing, VS Code's own QuickPick filtering);
+  picking one immediately draws a relation arrow with no further action
+  needed, and the modal's item list shows the new "Relation" entry.
+- **"Document relation" add flow, cross-document target:** picking a
+  *different* workspace `.md` file in step 1 pops a second QuickPick built
+  from that file's own node list (parsed fresh, works even if that file
+  isn't open in any editor); picking a node there adds a cross-doc badge
+  to the source node and durably writes a persistent block id into the
+  *target* file (open it separately afterward and confirm the `^blockid`
+  survived an independent resave — the `externalRelationTarget`/
+  `externalRef` durability mechanism from the very first Phase C entry).
+- **Cancel-safety:** pressing Escape (or clicking away) at either QuickPick
+  step aborts the whole add — no relation appears, nothing is written to
+  either file, and the modal is left exactly as it was.
+- **Removing a relation/link:** clicking "Remove" on an item immediately
+  removes the corresponding arrow/badge/link from the canvas and drops the
+  `[[#^id]]`/link syntax from the node's underlying markdown (including
+  the `" → "` separator, when other relations remain on the same node).
+- **Adding a free-text "Link"** still works exactly as before the
+  redesign (display text, kind dropdown defaulting to "URL or file path",
+  target field) — and the modal stays open afterward (D7) rather than
+  auto-closing, so a second add can follow immediately.

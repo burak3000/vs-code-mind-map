@@ -87,7 +87,30 @@ function makeFakeVscodeModule() {
 			if (!fsFiles.has(uri.fsPath)) throw new Error("FileNotFound");
 			return { type: 1, size: fsFiles.get(uri.fsPath)!.length };
 		}),
+		// Phase C (R4): reads a foreign document's raw bytes — tests seed this
+		// via `setForeignFileText`/`fsFiles.set` directly (the writeImage path
+		// above already deals in raw bytes the same way).
+		readFile: vi.fn(async (uri: { fsPath: string }) => {
+			if (!fsFiles.has(uri.fsPath)) throw new Error("FileNotFound");
+			return fsFiles.get(uri.fsPath)!;
+		}),
 	};
+
+	// Phase C (R4): `vscode.workspace.findFiles` — tests seed the fake
+	// workspace's `.md` files via `setMarkdownFiles`; `listMarkdownFiles`
+	// (MindMapEditorProvider) doesn't otherwise care about glob matching,
+	// only about getting back a list of file URIs.
+	let markdownFileUris: { fsPath: string }[] = [];
+	const findFiles = vi.fn(async () => markdownFileUris.map((f) => ({ fsPath: f.fsPath, toString: () => `file://${f.fsPath}` })));
+
+	// Phase C: `vscode.window.showQuickPick` — tests control what it
+	// "picks" via `setNextQuickPickIndex` (or leave it unset for "the user
+	// pressed Escape", i.e. `undefined`).
+	let nextQuickPickIndex: number | undefined = undefined;
+	const showQuickPick = vi.fn(async (items: { index: number }[]) => {
+		if (nextQuickPickIndex === undefined) return undefined;
+		return items.find((it) => it.index === nextQuickPickIndex);
+	});
 
 	/** Simulates a genuine external edit (e.g. typed in a split text editor) — mutates the document directly and fires the change listeners, bypassing applyEdit/WorkspaceEdit entirely (unlike the provider's own write-back path). */
 	function fireExternalChange(doc: FakeDocument & { _text: string }, newText: string): void {
@@ -151,6 +174,7 @@ function makeFakeVscodeModule() {
 				},
 				applyEdit,
 				fs,
+				findFiles,
 			},
 			window: {
 				registerCustomEditorProvider: vi.fn((_viewType: string, provider: unknown, _opts: unknown) => {
@@ -160,6 +184,7 @@ function makeFakeVscodeModule() {
 				showWarningMessage,
 				showInformationMessage,
 				showTextDocument,
+				showQuickPick,
 				get activeTextEditor() {
 					return activeTextEditorHolder.current;
 				},
@@ -202,6 +227,21 @@ function makeFakeVscodeModule() {
 			fs.writeFile.mockClear();
 			fs.createDirectory.mockClear();
 			fs.stat.mockClear();
+			fs.readFile.mockClear();
+		},
+		findFiles,
+		showQuickPick,
+		/** Phase C (R4): seeds `vscode.workspace.findFiles`'s result for `listMarkdownFiles`. */
+		setMarkdownFiles: (fsPaths: string[]) => {
+			markdownFileUris = fsPaths.map((fsPath) => ({ fsPath }));
+		},
+		/** Phase C (R4): seeds a foreign file's raw text, readable via `fs.readFile` (`readForeignDocument`). */
+		setForeignFileText: (fsPath: string, text: string) => {
+			fsFiles.set(fsPath, new TextEncoder().encode(text));
+		},
+		/** Phase C: what the next `showQuickPick` call resolves to — an item index, or `undefined` for "the user pressed Escape." */
+		setNextQuickPickIndex: (index: number | undefined) => {
+			nextQuickPickIndex = index;
 		},
 	};
 }
@@ -276,6 +316,10 @@ describe("MindMapEditorProvider (host)", () => {
 		fakeVscode.clearConfigValues();
 		fakeVscode.setWorkspaceFolders(undefined);
 		fakeVscode.resetFs();
+		fakeVscode.findFiles.mockClear();
+		fakeVscode.showQuickPick.mockClear();
+		fakeVscode.setMarkdownFiles([]);
+		fakeVscode.setNextQuickPickIndex(undefined);
 		({ MindMapEditorProvider } = await import("../src/MindMapEditorProvider"));
 	});
 
@@ -632,6 +676,89 @@ describe("MindMapEditorProvider (host)", () => {
 		panel.sendFromWebview({ type: "writeImage", id: 9, mimeType: "image/png", dataBase64: Buffer.from("x").toString("base64") });
 
 		await vi.waitFor(() => expect(panel.webview.postMessage).toHaveBeenCalledWith({ type: "imageWritten", id: 9, embedText: null }));
+	});
+
+	// --- Phase C: relation-picker host primitives (R4 cross-document data access + native QuickPick) ---
+
+	it("listMarkdownFiles: replies with every workspace .md file except the current document, as absolute path + basename", async () => {
+		const provider = register();
+		fakeVscode.setMarkdownFiles(["/workspace/notes/fixture.md", "/workspace/notes/other.md", "/workspace/board.md"]);
+		const panel = makeFakeWebviewPanel();
+		const document = makeFakeDocument("# Root\n", "file:///workspace/notes/fixture.md");
+		await provider.resolveCustomTextEditor(document as unknown as import("vscode").TextDocument, panel as unknown as import("vscode").WebviewPanel, {} as import("vscode").CancellationToken);
+		(panel.webview.postMessage as ReturnType<typeof vi.fn>).mockClear();
+
+		panel.sendFromWebview({ type: "listMarkdownFiles", id: 11 });
+
+		await vi.waitFor(() => expect(panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "markdownFilesListed", id: 11 })));
+		const reply = (panel.webview.postMessage as ReturnType<typeof vi.fn>).mock.calls.find((c) => (c[0] as { type?: string }).type === "markdownFilesListed")![0] as {
+			files: { path: string; basename: string }[];
+		};
+		// The current document itself is excluded — only the other two.
+		expect(reply.files).toEqual(
+			expect.arrayContaining([
+				{ path: "/workspace/notes/other.md", basename: "other" },
+				{ path: "/workspace/board.md", basename: "board" },
+			])
+		);
+		expect(reply.files.find((f) => f.path === "/workspace/notes/fixture.md")).toBeUndefined();
+	});
+
+	it("readForeignDocument: replies with the file's UTF-8 text, or null if it can't be read", async () => {
+		const provider = register();
+		fakeVscode.setForeignFileText("/workspace/notes/other.md", "# Other\n## Child\n");
+		const panel = makeFakeWebviewPanel();
+		const document = makeFakeDocument("# Root\n", "file:///workspace/notes/fixture.md");
+		await provider.resolveCustomTextEditor(document as unknown as import("vscode").TextDocument, panel as unknown as import("vscode").WebviewPanel, {} as import("vscode").CancellationToken);
+		(panel.webview.postMessage as ReturnType<typeof vi.fn>).mockClear();
+
+		panel.sendFromWebview({ type: "readForeignDocument", id: 21, path: "/workspace/notes/other.md" });
+		await vi.waitFor(() => expect(panel.webview.postMessage).toHaveBeenCalledWith({ type: "foreignDocumentRead", id: 21, text: "# Other\n## Child\n" }));
+
+		panel.sendFromWebview({ type: "readForeignDocument", id: 22, path: "/workspace/notes/missing.md" });
+		await vi.waitFor(() => expect(panel.webview.postMessage).toHaveBeenCalledWith({ type: "foreignDocumentRead", id: 22, text: null }));
+	});
+
+	it("writeForeignDocument: writes the file's text and acks ok:true; ok:false (never throwing) on failure", async () => {
+		const provider = register();
+		const panel = makeFakeWebviewPanel();
+		const document = makeFakeDocument("# Root\n", "file:///workspace/notes/fixture.md");
+		await provider.resolveCustomTextEditor(document as unknown as import("vscode").TextDocument, panel as unknown as import("vscode").WebviewPanel, {} as import("vscode").CancellationToken);
+		(panel.webview.postMessage as ReturnType<typeof vi.fn>).mockClear();
+
+		panel.sendFromWebview({ type: "writeForeignDocument", id: 31, path: "/workspace/notes/other.md", text: "# Other\n## New child\n" });
+		await vi.waitFor(() => expect(panel.webview.postMessage).toHaveBeenCalledWith({ type: "foreignDocumentWritten", id: 31, ok: true }));
+		expect(Buffer.from(fakeVscode.fsFiles.get("/workspace/notes/other.md")!).toString("utf8")).toBe("# Other\n## New child\n");
+
+		fakeVscode.fs.writeFile.mockRejectedValueOnce(new Error("EACCES"));
+		panel.sendFromWebview({ type: "writeForeignDocument", id: 32, path: "/workspace/notes/other.md", text: "irrelevant" });
+		await vi.waitFor(() => expect(panel.webview.postMessage).toHaveBeenCalledWith({ type: "foreignDocumentWritten", id: 32, ok: false }));
+	});
+
+	it("showQuickPick: shows vscode.window.showQuickPick with the given items/placeholder and replies with the picked index, or null on cancel (Escape)", async () => {
+		const provider = register();
+		const panel = makeFakeWebviewPanel();
+		const document = makeFakeDocument("# Root\n", "file:///workspace/notes/fixture.md");
+		await provider.resolveCustomTextEditor(document as unknown as import("vscode").TextDocument, panel as unknown as import("vscode").WebviewPanel, {} as import("vscode").CancellationToken);
+		(panel.webview.postMessage as ReturnType<typeof vi.fn>).mockClear();
+
+		fakeVscode.setNextQuickPickIndex(1);
+		panel.sendFromWebview({
+			type: "showQuickPick",
+			id: 41,
+			items: [{ label: "fixture.md (current)" }, { label: "other.md" }],
+			placeholder: "Pick the document the target node lives in",
+		});
+		await vi.waitFor(() => expect(panel.webview.postMessage).toHaveBeenCalledWith({ type: "quickPickResult", id: 41, index: 1 }));
+		expect(fakeVscode.showQuickPick).toHaveBeenCalledWith(
+			expect.arrayContaining([expect.objectContaining({ label: "fixture.md (current)" }), expect.objectContaining({ label: "other.md" })]),
+			expect.objectContaining({ placeHolder: "Pick the document the target node lives in" })
+		);
+
+		fakeVscode.setNextQuickPickIndex(undefined); // Escape/click-away
+		(panel.webview.postMessage as ReturnType<typeof vi.fn>).mockClear();
+		panel.sendFromWebview({ type: "showQuickPick", id: 42, items: [{ label: "only option" }] });
+		await vi.waitFor(() => expect(panel.webview.postMessage).toHaveBeenCalledWith({ type: "quickPickResult", id: 42, index: null }));
 	});
 
 	// --- M4: settings (contributes.configuration) ---

@@ -8,7 +8,7 @@ Implementation is done by a Sonnet 5 agent, milestone by milestone, with a
 review gate after each milestone; performance trade-offs are decided by the
 user, never by the agent (rule 3).
 
-_Last updated: 2026-07-20 (Phase C of the post-M5 catch-up: node relations wired live to VS Code UI/host — settings, render-loop, cross-doc badge click, external-link-open fix, cross-document host data access — except the relation-authoring modal redesign, escalated to the coordinating instance rather than decided unilaterally; see PROGRESS.md's dated Phase C section and DECISIONS.md)._
+_Last updated: 2026-07-20 (Phase C of the post-M5 catch-up completed — node relations fully wired to VS Code UI/host, including the redesigned relation/link modal with a native-QuickPick-driven target picker, the one piece the user steered on; see PROGRESS.md's dated Phase C section and DECISIONS.md's two dated Phase C entries)._
 
 ## Milestone status
 
@@ -33,7 +33,7 @@ same way the milestones were:
 |---|---|---|
 | A | Re-sync the platform-free core (`model/layout/render/sync/controller` + `webview/ui/InlineEditor.ts`) to the reference's current state; port new/updated tests; keep the build green with new features dormant | **Done** |
 | B | Status badges: VS Code wiring (keyboard shortcuts, context-menu items, click handlers) | **Done** |
-| C | Node relations: VS Code wiring (redesigned relation modal/combobox, cross-document host-side file reader, `showRelations` setting, styles, external-link-opening fix, center-into-view UX fixes) | **Partially done, one escalation open** — see below |
+| C | Node relations: VS Code wiring (redesigned relation modal/combobox, cross-document host-side file reader, `showRelations` setting, styles, external-link-opening fix, center-into-view UX fixes) | **Done** — the one escalation (QuickPick vs. plain-DOM combobox) was resolved by the user (QuickPick) and built; see below |
 | D | Docs (XMind-trademark scrub, README/CHANGELOG updates), re-benchmark with features live, re-package | Pending |
 
 ## M0 — done
@@ -480,12 +480,14 @@ summary:
   weakened assertion.
 - Not committed — left for the user, same as every phase so far.
 
-## Phase C — partially done (post-M5 catch-up: node relations VS Code wiring), one escalation open
+## Phase C — done (post-M5 catch-up: node relations VS Code wiring)
 
 Wired the platform-free relations support Phase A ported dormant to actual
-VS Code UI/host behavior, except the relation-authoring modal itself
-(escalated — see below). Reference commits `4c7d178`/`f58b3c1`/`7578f31`.
-Full reasoning in DECISIONS.md's dated "Phase C" entry; summary:
+VS Code UI/host behavior, including the redesigned relation/link modal and
+its QuickPick-driven target picker (the one piece originally escalated —
+now resolved by the user and built). Reference commits
+`4c7d178`/`f58b3c1`/`7578f31`. Full reasoning in DECISIONS.md's two dated
+"Phase C" entries; summary:
 
 - **`showRelations` setting:** `contributes.configuration` entry,
   `MindMapWebviewConfig`/`setConfig` extended (not a parallel channel),
@@ -527,29 +529,50 @@ Full reasoning in DECISIONS.md's dated "Phase C" entry; summary:
   contracts. Not yet called from anywhere (the modal that would call them
   isn't built), but ready regardless of which UI approach the modal ends
   up using.
-- **Escalated, not built: the relation/link modal redesign** (reference
-  `7578f31`, 436-line `LinkModal.ts` diff) and its searchable-combobox
-  predecessor (`f58b3c1`). The task's own guardrail flagged this as a
-  genuine platform-fit fork — VS Code has a native `showQuickPick` API that
-  could serve the "pick a document, then a node in it" searchable two-step
-  picker, as an alternative to extending this repo's existing plain-DOM-
-  overlay family (InlineEditor/SearchPanel/LinkModal/ContextMenu). Per
-  instruction, this was surfaced to the coordinating instance as a question
-  rather than decided unilaterally — see DECISIONS.md and the task-level
-  report. **Net effect:** a document with pre-existing `[[#^id]]` relation
-  syntax renders/resolves/opens correctly end-to-end; there is no UI path
-  yet to *author* a new relation by interacting with the map —
-  `webview/ui/LinkModal.ts` is unchanged (still the pre-Phase-C single-
-  link-edit form).
+- **The relation/link modal redesign, resolved (reference `7578f31`,
+  436-line `LinkModal.ts` diff) and its searchable-combobox predecessor
+  (`f58b3c1`):** flagged as a genuine platform-fit fork — VS Code has a
+  native `showQuickPick` API that could serve the "pick a document, then a
+  node in it" two-step picker, as an alternative to extending this repo's
+  plain-DOM-overlay family (InlineEditor/SearchPanel/LinkModal/
+  ContextMenu). **User decided: build it with `showQuickPick`.**
+  `webview/ui/LinkModal.ts` is fully redesigned to match — item list (each
+  relation/link individually removable) plus a radio-gated add flow
+  (*Document relation*, default, delegates the whole document+node pick to
+  a host-native two-step QuickPick via `webview/main.ts`'s
+  `pickAndAddRelation`; *Link*, the pre-redesign free-text wikilink/URL/
+  path form, now defaulting to "URL or file path"). One new generic
+  message pair, `showQuickPick`/`quickPickResult`
+  (`MindMapEditorProvider.ts`), reused for both picker steps — the host
+  never learns anything about relations/documents/nodes, only shows a
+  label list and returns a picked index (or `null` on Escape/click-away,
+  which the whole flow treats as a clean no-op — no partial insert). The
+  actual relation-commit logic on a successful pick is 100% already-ported
+  core (`forcePersistentId`/`buildLinkText`/`appendLinkText`/
+  `Controller.commitRename`/`commitForeignRelationTarget`) — nothing new
+  invented for the mutation itself, only the QuickPick sequencing.
+  Entry point stayed Ctrl/Cmd+K (`linkEditor`), extended in place — the
+  reference's own move to Ctrl/Cmd+Shift+L was purely to dodge an
+  Obsidian-core hotkey collision this repo's Ctrl/Cmd+K has never had.
 - **No core files touched:** `webview/{model,layout,render,sync,
   controller}` re-confirmed byte-identical to reference HEAD
   (`SvgRenderer.ts`'s divergence still exactly the pre-existing M5
   `getViewport`/`setViewport` pair).
-- **Tests:** 484 passed / 0 skipped (36 files, same count as Phase B — this
-  phase's wiring is covered by existing module-level relations/renderer/
-  config suites; two `mindMapEditorProvider.test.ts` assertions updated for
-  the new `showRelations: true` field in `setConfig`'s payload).
+- **Tests:** 492 passed / 0 skipped (36 files, up from 484) —
+  `test/linkModal.test.ts` fully rewritten (10 tests) for the new shape;
+  `test/webviewBootstrap.test.ts` gained two QuickPick-flow tests (a
+  successful pick end-to-end, a cancel-at-step-1 no-op) and one adjusted
+  pre-existing test; `test/mindMapEditorProvider.test.ts` gained five new
+  host-side tests covering `listMarkdownFiles`/`readForeignDocument`/
+  `writeForeignDocument`/`showQuickPick` directly (previously dead code
+  with zero host-level coverage), extending that file's fake `vscode`
+  module with `findFiles`/`fs.readFile`/`showQuickPick` stubs.
 - Not committed — left for the user, same as every phase so far.
+
+**Phase C is now fully done** — a relation (same-doc or cross-doc) can be
+both authored (Ctrl/Cmd+K's "Document relation" add flow) and consumed
+(arrow/badge rendering, click-to-open, `showRelations` toggle) entirely
+through VS Code UI. No escalation remains open for this phase.
 
 ## Decisions taken so far
 

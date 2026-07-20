@@ -388,6 +388,8 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 				mimeType?: string;
 				dataBase64?: string;
 				path?: string;
+				items?: { label: string; description?: string }[];
+				placeholder?: string;
 			}) => {
 				// Ready-handshake: the webview script posts "ready" once its
 				// message listener is registered (both on first load and on every
@@ -428,6 +430,8 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 					typeof msg.text === "string"
 				) {
 					void this.writeForeignDocument(webview, msg.id, msg.path, msg.text);
+				} else if (msg?.type === "showQuickPick" && typeof msg.id === "number" && Array.isArray(msg.items)) {
+					void this.showQuickPick(webview, msg.id, msg.items, msg.placeholder);
 				}
 			}
 		);
@@ -641,6 +645,38 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 			ok = false;
 		}
 		void webview.postMessage({ type: "foreignDocumentWritten", id, ok });
+	}
+
+	/**
+	 * Phase C relation-picker UI decision (user-decided, see DECISIONS.md's
+	 * dated entry): the searchable document/node picker for authoring a
+	 * relation uses VS Code's native `showQuickPick`, not a plain-DOM
+	 * combobox rebuilt in the webview. This is the one and only native-UI
+	 * primitive that decision needs — deliberately generic (a plain
+	 * label/description list in, a chosen index or `null` out) rather than
+	 * relations-specific, so the webview drives the *entire* two-step
+	 * flow (which list to show first, what to do with the result) and this
+	 * method never needs to know anything about relations, documents, or
+	 * nodes. Reuses the same request/response-by-id shape every other host
+	 * round trip in this file already uses (`resolveImage`/`writeImage`,
+	 * the three foreign-document handlers above) rather than inventing a
+	 * new message pattern.
+	 *
+	 * `index` (not the label/item itself) is sent back — the webview
+	 * already has the authoritative item list it built `items` from, so
+	 * round-tripping only a position avoids re-serializing potentially
+	 * large label strings back across the boundary and sidesteps any
+	 * ambiguity from two items sharing a label (e.g. two nodes with
+	 * identical text). `showQuickPick` returning `undefined` (Escape, or
+	 * clicking away) maps to `index: null` — the webview's cancel-safety
+	 * contract (see `webview/main.ts`'s `requestQuickPick`) treats that as
+	 * "abort the whole flow, no partial insert."
+	 */
+	private async showQuickPick(webview: vscode.Webview, id: number, items: { label: string; description?: string }[], placeholder?: string): Promise<void> {
+		type IndexedItem = vscode.QuickPickItem & { index: number };
+		const quickPickItems: IndexedItem[] = items.map((it, index) => ({ label: it.label, description: it.description, index }));
+		const picked = await vscode.window.showQuickPick(quickPickItems, { placeHolder: placeholder });
+		void webview.postMessage({ type: "quickPickResult", id, index: picked ? picked.index : null });
 	}
 
 	/**

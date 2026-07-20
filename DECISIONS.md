@@ -1791,3 +1791,157 @@ once wired," and `bench:relations`'s re-run (see benchmarks.md) confirms
 it clears every budget with room to spare. The three new foreign-document
 message handlers add zero cost to any existing path (they're unreachable
 until the still-unbuilt modal calls them). No new dependency introduced.
+
+## 2026-07-20 — Phase C (continued): relation-target picker built with VS Code's native QuickPick, not a plain-DOM combobox
+
+**Context:** the previous Phase C entry (above) escalated one genuine
+platform-fit fork rather than guessing: should the relation-target picker
+(document, then a node in it) be a hand-rolled plain-DOM searchable
+combobox — extending this repo's existing InlineEditor/SearchPanel/
+LinkModal/ContextMenu overlay family, matching the reference's own
+`f58b3c1` — or VS Code's native `showQuickPick`? **User decision: build it
+with `vscode.window.showQuickPick`.** This entry covers what was built on
+that decision: the redesigned relation/link modal (reference `7578f31`)
+and its QuickPick-driven picker flow, closing out Phase C's one remaining
+piece.
+
+**Message-protocol shape — one new generic primitive, not a
+relations-specific one:** `showQuickPick`/`quickPickResult`
+(`MindMapEditorProvider.showQuickPick`, `webview/main.ts`'s
+`requestQuickPick`) is deliberately generic — a plain `{label,
+description?}[]` in, a picked `index | null` out — rather than a
+"pick a relation target" message that bakes in domain knowledge. This
+matters architecturally: it keeps the *entire* two-step sequencing (which
+list to show first, what a pick means, what to do next) inside the
+webview, exactly like CLAUDE.md rule 7 requires ("the entire interaction
+loop lives in the webview; the host is only the persistence layer plus a
+handful of platform actions"). The host never learns it's showing a
+document picker vs. a node picker vs. anything else — same "reuse the
+established request/response-by-id shape" discipline as `resolveImage`/
+`writeImage` and the three foreign-document handlers from the prior Phase
+C entry. `index`, not the picked item itself, round-trips back — the
+webview already holds the authoritative list it built the QuickPick items
+from, so this avoids re-serializing (possibly large) label strings across
+the boundary and sidesteps ambiguity if two items share a label (e.g. two
+nodes with identical text) — see `MindMapEditorProvider.showQuickPick`'s
+own doc comment.
+
+**Two-step flow lives entirely in `webview/main.ts`'s
+`pickAndAddRelation`, using only already-ported core functions — nothing
+new invented for the mutation itself:** step 1 (`requestListMarkdownFiles`
++ a `showQuickPick` for "current document" + every other workspace `.md`
+file) and step 2 (a second `showQuickPick`, over either the in-memory
+current-document node list or `resolveRelationTargetsForDocument`'s
+lazily-read-and-cached foreign-document one — `sync/foreignRelation.ts`,
+ported unmodified since Phase A) are pure sequencing/data-fetching. The
+actual relation-authoring logic on a successful pick is verbatim
+already-ported core: `forcePersistentId` (sync/metadata.ts) mints the
+target's block id, `buildLinkText`/`appendLinkText` (model/links.ts) build
+the appended node text, `Controller.commitRename` commits it (undo/redo,
+debounced write-back — everything downstream is unchanged); the
+foreign-document case additionally routes through
+`commitForeignRelationTarget` for the read-modify-write against the
+*other* file. This matches the task's explicit instruction not to invent
+new mutation logic — the only genuinely new code is the QuickPick
+sequencing and the host-side data-access primitives (already built in the
+prior Phase C entry).
+
+**Cancel-safety (guardrail #4):** both `requestQuickPick` calls check
+`=== null` before proceeding; a `null` at either step returns `null` from
+`pickAndAddRelation` immediately, before any `commitRename`/
+`commitForeignRelationTarget` call — verified by two dedicated tests (a
+webview-level one in `webviewBootstrap.test.ts` asserting no relation
+appears and no `.mm-node-link` is rendered after an Escape at step 1, and
+a `LinkModal.ts`-level one asserting the item list and button state are
+untouched after a cancelled pick). `LinkModal.ts`'s own "Choose document &
+node…" button treats a `null` result as a pure no-op: it doesn't touch the
+item list, only re-enables the button (via `.finally`, so this holds
+whether the pick succeeded, was cancelled, or the promise rejected).
+
+**Trigger — reused the existing Ctrl/Cmd+K `linkEditor` entry point, not a
+new command:** re-checked the reference's commit history per the task's
+own instruction — `7578f31`'s title ("Redesign the relation/link modal")
+confirms Obsidian's own relation and link editing were already unified
+into one modal (`Ctrl/Cmd+Shift+L` there, moved off `Ctrl/Cmd+K` purely to
+dodge an Obsidian-core hotkey collision — see that reference commit's own
+`MindMapView.ts` diff). This repo's Ctrl/Cmd+K binding has never had an
+equivalent VS Code-default collision (M3 already established it without
+incident), so there was no reason to move it — `openLinkEditor`
+(`webview/main.ts`) is extended in place, same `"linkEditor"`
+`CommandMessage`/`contributes.keybindings` entry as before. The existing
+right-click context menu's "Edit link" item (already wired to
+`openLinkEditor`) picks up the new modal for free, unchanged.
+
+**`webview/ui/LinkModal.ts` full redesign:** item list (label + badge +
+per-item Remove button, `listNodeLinkItems`'s `LinkItemBadge` mapped to
+the same four labels the reference uses) plus a radio-gated add flow —
+*Document relation* (default) triggers the QuickPick flow via a single
+`onPickAndAddRelation` callback the modal doesn't need to understand;
+*Link* is the pre-redesign free-text wikilink/URL/path form, defaulting to
+"URL or file path" not "Wikilink" (mirrors reference `7578f31`'s same
+default flip, reasoning unchanged: "Link" is specifically for external
+resources, a same-workspace wikilink is better served by "Document
+relation"). Every add/remove commits immediately and re-renders from the
+callback's returned item list; a single "Close" button replaces the old
+modal's "Save" (D7: multiple adds per session, no discrete save step).
+Still a plain absolutely-positioned DOM overlay (no VS Code webview
+equivalent of Obsidian's `Modal`/`Setting` — same family as
+InlineEditor/SearchPanel/ContextMenu) — only the *picker* moved to native
+QuickPick, not the modal shell itself, since the modal's own list/remove/
+free-text-link UI has no comparable VS Code-native alternative and
+extending the existing plain-DOM family for that part remains the better
+fit.
+
+**Styling:** widened `.mm-link-modal` from the pre-redesign fixed 320px to
+`min(560px, 92vw)` (an item row plus two sub-forms need more room than a
+single-field editor did — reference `7578f31`'s own redesign widens its
+modal too, to `min(640px, 92vw)`; chose a narrower cap here since this
+modal has no document/node combobox of its own to fit, that work having
+moved to the native QuickPick). Added `.mm-link-items`/`-empty`,
+`.mm-link-item`/`-label`/`-badge*`/`-remove`, `.mm-link-mode-radio`/
+`-option`, `.mm-link-add-form` — translated from the reference's
+`styles.css` (`f58b3c1`/`7578f31`) to this file's established `--vscode-*`
+mapping (border/description/errorForeground/badge-background tokens,
+matching the pattern every other section of this file already uses); no
+new hardcoded hex.
+
+**Verification:** `npm run build` clean; `npm test` — 36 files, 492 tests,
+0 failed, 0 skipped (up from 484): `test/linkModal.test.ts` fully rewritten
+(10 tests) for the new item-list/add-flow/QuickPick-delegation shape (not
+a weakened suite — the old single-edit-form assertions no longer apply to
+a form that no longer exists, replaced by tests of the new, correct
+shape); `test/webviewBootstrap.test.ts` gained two new "Document relation"
+QuickPick-flow tests (a full successful pick end-to-end, and a
+cancel-at-step-1 no-op) alongside one adjusted pre-existing "linkEditor
+command" test (now exercises the "Link" mode explicitly, and confirms the
+modal stays open after adding per D7, rather than asserting the
+pre-redesign auto-close); `test/mindMapEditorProvider.test.ts` gained five
+new host-side tests covering `listMarkdownFiles`/`readForeignDocument`/
+`writeForeignDocument`/`showQuickPick` directly (these existed as
+unreachable dead code after the prior Phase C entry with zero host-level
+test coverage — closed that gap now that they're actually exercised by a
+real flow), which required extending the file's fake `vscode` module with
+`workspace.findFiles`, `fs.readFile`, and `window.showQuickPick` stubs.
+`diff -rq webview/{model,layout,sync,controller}` against reference HEAD
+`src/{...}`: still byte-identical; `render/SvgRenderer.ts` still differs
+only by the pre-existing M5 `getViewport`/`setViewport` pair — 0 lines
+touched by this piece (only `webview/ui/LinkModal.ts`, `webview/main.ts`,
+`src/MindMapEditorProvider.ts`, `media/mindmap.css`, and three test files
+changed). `bench:relations` re-run: numbers unchanged within noise from
+the prior entry (2000/200: open 30.4ms, Tab 15.0ms, relation-rename
+14.0ms; 5000/500: open 41.3ms, Tab 28.3ms, relation-rename 30.2ms) — this
+piece adds no per-frame/per-keystroke cost, only code paths behind an
+explicit "Choose document & node…" click.
+
+**Cost:** zero new per-frame or per-keystroke work — `showQuickPick`/
+`listMarkdownFiles`/`readForeignDocument`/`writeForeignDocument` all run
+only when a user explicitly opens the relation modal and clicks through
+its add flow, the same order of infrequency as opening `ContextMenu` or
+`LinkModal` itself. No new dependency (native `vscode.window.showQuickPick`
+is a built-in VS Code API, not a package).
+
+**Net effect — Phase C is now feature-complete:** a relation (same-doc or
+cross-doc) can be both authored (via Ctrl/Cmd+K's "Document relation" add
+flow) and consumed (arrow/badge rendering, click-to-open, `showRelations`
+toggle) entirely through VS Code UI. No further escalation open for this
+phase.

@@ -232,6 +232,16 @@ describe("webview bootstrap (main.ts) — M3 feature wiring", () => {
 		sendFromHost({ type: "setDocument", text, version, title: "fallback" });
 	}
 
+	/** Lets a chain of `await`s inside `webview/main.ts`'s Phase C QuickPick-driven relation flow (each resumed by a synchronous `sendFromHost` reply) actually run before the next assertion — a macrotask flush (not just a microtask `Promise.resolve()`) so it's correct regardless of exactly how many `await` hops sit between two host round trips. */
+	function flush(): Promise<void> {
+		return new Promise((resolve) => setTimeout(resolve, 0));
+	}
+
+	function lastMessageOfType(type: string): Record<string, unknown> | undefined {
+		const call = [...postMessage.mock.calls].reverse().find((c) => (c[0] as { type?: string })?.type === type);
+		return call ? (call[0] as Record<string, unknown>) : undefined;
+	}
+
 	function container(): HTMLElement {
 		return document.querySelector<HTMLElement>(".mindmap-view-container")!;
 	}
@@ -391,7 +401,7 @@ describe("webview bootstrap (main.ts) — M3 feature wiring", () => {
 		expect(postMessage).toHaveBeenCalledWith({ type: "openLink", kind: "wikilink", target: "Some Note" });
 	});
 
-	it("Ctrl/Cmd+K (routed as a 'linkEditor' command) opens the link editor for the selected node, and Save commits link syntax", () => {
+	it("Ctrl/Cmd+K (routed as a 'linkEditor' command) opens the links & relations modal for the selected node; adding a Link commits link syntax immediately (modal stays open — D7)", () => {
 		resetTree();
 		selectNodeByText("child two");
 
@@ -399,20 +409,95 @@ describe("webview bootstrap (main.ts) — M3 feature wiring", () => {
 		const backdrop = document.querySelector(".mm-link-modal-backdrop");
 		expect(backdrop).not.toBeNull();
 
-		const targetInput = document.querySelectorAll<HTMLInputElement>(".mm-link-modal-input")[1];
+		// The redesigned modal (Phase C, reference 7578f31) defaults to
+		// "Document relation" mode (the QuickPick-driven flow, covered by its
+		// own test below) — switch to "Link" for the free-text form.
+		const radios = document.querySelectorAll<HTMLInputElement>(".mm-link-mode-option input");
+		radios[1].checked = true;
+		radios[1].dispatchEvent(new Event("change"));
+
+		const linkForm = document.querySelectorAll<HTMLDivElement>(".mm-link-add-form")[1];
+		const targetInput = linkForm.querySelectorAll<HTMLInputElement>(".mm-link-modal-input")[1];
 		targetInput.value = "https://example.com";
 		targetInput.dispatchEvent(new Event("input"));
-		const kindSelect = document.querySelector<HTMLSelectElement>(".mm-link-modal-select")!;
-		kindSelect.value = "mdlink";
-		kindSelect.dispatchEvent(new Event("change"));
-		document.querySelector<HTMLButtonElement>(".mm-link-modal-save")!.click();
+		const kindSelect = linkForm.querySelector<HTMLSelectElement>("select")!;
+		expect(kindSelect.value).toBe("mdlink"); // defaults to URL/file path, not wikilink (reference 7578f31)
+		linkForm.querySelector<HTMLButtonElement>(".mm-link-add-link")!.click();
 
-		expect(document.querySelector(".mm-link-modal-backdrop")).toBeNull();
-		// The rendered node text shows the link's *label* ("child two"), not
-		// its target — the target lives on the rendered link span's dataset.
+		// Unlike the pre-redesign single-edit modal, adding no longer closes
+		// it (D7: several relations/links can be added in one session) — the
+		// rendered link updates immediately regardless.
+		expect(document.querySelector(".mm-link-modal-backdrop")).not.toBeNull();
 		const link = document.querySelector<SVGElement>(".mm-node-link")!;
 		expect(link.dataset.linkKind).toBe("mdlink");
 		expect(link.dataset.linkTarget).toBe("https://example.com");
+		expect(document.querySelector(".mm-link-item-badge")?.textContent).toBe("External link");
+
+		document.querySelector<HTMLButtonElement>(".mm-link-modal-buttons .mm-link-modal-save")!.click();
+		expect(document.querySelector(".mm-link-modal-backdrop")).toBeNull();
+	});
+
+	it("'Document relation' add flow drives listMarkdownFiles + two host-native QuickPicks and commits a same-doc relation on a successful pick", async () => {
+		resetTree();
+		selectNodeByText("child two");
+		sendFromHost({ type: "command", name: "linkEditor" });
+
+		postMessage.mockClear();
+		document.querySelector<HTMLButtonElement>(".mm-link-pick-relation")!.click();
+
+		// Step 0: the webview asks the host to enumerate workspace .md files
+		// (posted synchronously, before any host round trip completes).
+		const listCall = lastMessageOfType("listMarkdownFiles");
+		expect(listCall).toBeTruthy();
+		sendFromHost({ type: "markdownFilesListed", id: listCall!.id, files: [] });
+		await flush();
+
+		// Step 1: document QuickPick — current document listed (and, with no
+		// other workspace files in this test, alone).
+		const docPick = lastMessageOfType("showQuickPick") as { id: number; items: { label: string }[] } | undefined;
+		expect(docPick).toBeTruthy();
+		expect(docPick!.items).toEqual([{ label: "fallback (current)" }]);
+		sendFromHost({ type: "quickPickResult", id: docPick!.id, index: 0 });
+		await flush();
+
+		// Step 2: node QuickPick — every other node in the current document,
+		// excluding "child two" itself (the node being edited).
+		const nodePick = lastMessageOfType("showQuickPick") as { id: number; items: { label: string }[] } | undefined;
+		expect(nodePick).toBeTruthy();
+		const labels = nodePick!.items.map((i) => i.label);
+		expect(labels).toEqual(expect.arrayContaining(["Root", "Branch A", "child one", "Branch B", "child three"]));
+		expect(labels).not.toContain("child two");
+		sendFromHost({ type: "quickPickResult", id: nodePick!.id, index: labels.indexOf("child one") });
+		await flush();
+
+		// Committed immediately: the modal's item list shows the new relation.
+		expect(document.querySelector(".mm-link-item-badge")?.textContent).toBe("Relation");
+		document.querySelector<HTMLButtonElement>(".mm-link-modal-buttons .mm-link-modal-save")!.click();
+	});
+
+	it("cancelling either QuickPick step (Escape/click-away -> index: null) is a no-op — nothing is committed", async () => {
+		resetTree();
+		selectNodeByText("child two");
+		sendFromHost({ type: "command", name: "linkEditor" });
+		expect(document.querySelector(".mm-link-items-empty")?.textContent).toBe("No links yet.");
+
+		postMessage.mockClear();
+		document.querySelector<HTMLButtonElement>(".mm-link-pick-relation")!.click();
+		const listCall = lastMessageOfType("listMarkdownFiles")!;
+		sendFromHost({ type: "markdownFilesListed", id: listCall.id, files: [] });
+		await flush();
+
+		const docPick = lastMessageOfType("showQuickPick") as { id: number } | undefined;
+		expect(docPick).toBeTruthy();
+		sendFromHost({ type: "quickPickResult", id: docPick!.id, index: null }); // Escape at step 1
+		await flush();
+
+		// No second QuickPick was ever shown, the item list is untouched, and
+		// the node's own text carries no link syntax.
+		expect(document.querySelector(".mm-link-items-empty")?.textContent).toBe("No links yet.");
+		expect(document.querySelector(".mm-node-link")).toBeNull();
+
+		document.querySelector<HTMLButtonElement>(".mm-link-modal-buttons .mm-link-modal-save")!.click();
 	});
 
 	it("Ctrl/Cmd+F (routed as a 'search' command) opens the search panel; selecting a result selects and centers that node", () => {

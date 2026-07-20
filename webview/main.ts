@@ -39,7 +39,7 @@ import { Controller, ControllerListener } from "./controller/Controller";
 import { assignMissingColors } from "./render/colors";
 import { assignMissingSides } from "./layout/sides";
 import { findEquivalentNode } from "./sync/reconcile";
-import { ensurePersistentIds } from "./sync/metadata";
+import { ensurePersistentIds, forcePersistentId } from "./sync/metadata";
 import { InlineEditor } from "./ui/InlineEditor";
 import { SearchPanel } from "./ui/SearchPanel";
 import { LinkModal } from "./ui/LinkModal";
@@ -50,10 +50,11 @@ import { collectVisibleNodes } from "./model/visibility";
 import { searchNodes } from "./model/search";
 import { resolveGoToTarget, GoToTarget } from "./sync/goToSection";
 import { parseExternalPaste } from "./sync/parseExternalPaste";
-import { LinkKind, getSoleLink, buildLinkText, getImageEmbed } from "./model/links";
+import { LinkKind, buildLinkText, getDisplayText, getImageEmbed, appendLinkText, removeLinkOccurrence, isUrlTarget, isAbsoluteFilesystemPath } from "./model/links";
 import { MindNode } from "./model/types";
 import { BADGE_DEFS } from "./model/statusBadges";
-import { resolveRelations } from "./model/relations";
+import { resolveRelations, listNodeLinkItems } from "./model/relations";
+import { CURRENT_DOCUMENT_ID, RelationTargetOptionLike as RelationTargetOption, resolveRelationTargetsForDocument, commitForeignRelationTarget } from "./sync/foreignRelation";
 
 /** Minimal typing for the API VS Code injects into every webview. Declared here instead of adding a @types/vscode-webview devDependency for one function signature. */
 interface VsCodeWebviewApi {
@@ -114,7 +115,51 @@ interface ImageWrittenMessage {
 	embedText: string | null;
 }
 
-type HostMessage = SetDocumentMessage | CommandMessage | SetConfigMessage | ImageResolvedMessage | ImageWrittenMessage;
+/**
+ * Phase C (R4 cross-document relations): four request/response message
+ * pairs, each keyed by a monotonic id (same shape as "writeImage"/
+ * "imageWritten" above) — the host-side data access + native-UI primitives
+ * `webview/sync/foreignRelation.ts`'s `ForeignVaultReader`/
+ * `ForeignVaultWriter` contracts and the relation-target picker need, but
+ * that this webview cannot do itself (enumerate/read/write arbitrary
+ * workspace files, or show a native `vscode.window.showQuickPick`). See
+ * `openLinkEditor`/`pickAndAddRelation` below for how the webview drives
+ * the whole two-step picker flow using only these four primitives — the
+ * host never learns anything about relations, documents, or nodes; it
+ * only lists files, reads/writes text, and shows a plain label list.
+ */
+interface MarkdownFilesListedMessage {
+	type: "markdownFilesListed";
+	id: number;
+	files: { path: string; basename: string }[];
+}
+interface ForeignDocumentReadMessage {
+	type: "foreignDocumentRead";
+	id: number;
+	text: string | null;
+}
+interface ForeignDocumentWrittenMessage {
+	type: "foreignDocumentWritten";
+	id: number;
+	ok: boolean;
+}
+/** Reply to "showQuickPick" — `index` is the picked item's position in the array this webview sent, or `null` if the user dismissed the picker (Escape/click-away) — see `MindMapEditorProvider.showQuickPick`'s own doc comment for why an index, not the item itself, round-trips. */
+interface QuickPickResultMessage {
+	type: "quickPickResult";
+	id: number;
+	index: number | null;
+}
+
+type HostMessage =
+	| SetDocumentMessage
+	| CommandMessage
+	| SetConfigMessage
+	| ImageResolvedMessage
+	| ImageWrittenMessage
+	| MarkdownFilesListedMessage
+	| ForeignDocumentReadMessage
+	| ForeignDocumentWrittenMessage
+	| QuickPickResultMessage;
 
 /** Mirrors `MindMapEditorProvider.ts`'s `MindMapWebviewConfig` and `package.json`'s `contributes.configuration` — see DECISIONS.md's dated "M4 settings" entry for which of these four apply live vs. only to the next-opened map, and why. */
 interface MindMapWebviewConfig {
@@ -144,6 +189,13 @@ const IMAGE_REFRESH_DEBOUNCE_MS = 50;
 /** Escapes a string for safe interpolation into a `RegExp` — used by `resolveTargetLine` to match a block-id/heading target's exact text. */
 function escapeRegExp(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** A foreign document's `.md` filename, minus its extension — the webview-side equivalent of Node's `path.parse(p).name` (no `path` module in a browser context), used as a `MinimalFile.basename` (`sync/foreignRelation.ts`) and as the wikilink filename in a cross-doc relation's built link text. Absolute paths from `listMarkdownFiles`/the host are always POSIX-or-native-separated file paths, never a URL, so a plain split on both separators is sufficient. */
+function basenameNoExt(filePath: string): string {
+	const parts = filePath.replace(/\\/g, "/").split("/");
+	const file = parts[parts.length - 1] ?? filePath;
+	return file.replace(/\.md$/i, "");
 }
 
 /**
@@ -270,6 +322,22 @@ class MindMapApp implements ControllerListener {
 	private readonly pendingWriteImageResolvers = new Map<number, (embedText: string | null) => void>();
 
 	/**
+	 * Phase C (R4): four more request/response round trips, same
+	 * monotonic-id-keyed shape as `writeImageRequestId`/
+	 * `pendingWriteImageResolvers` above — see `requestListMarkdownFiles`/
+	 * `requestReadForeignDocument`/`requestWriteForeignDocument`/
+	 * `requestQuickPick` below for the request side.
+	 */
+	private listMarkdownFilesRequestId = 0;
+	private readonly pendingListMarkdownFilesResolvers = new Map<number, (files: { path: string; basename: string }[]) => void>();
+	private readForeignDocumentRequestId = 0;
+	private readonly pendingReadForeignDocumentResolvers = new Map<number, (text: string | null) => void>();
+	private writeForeignDocumentRequestId = 0;
+	private readonly pendingWriteForeignDocumentResolvers = new Map<number, () => void>();
+	private quickPickRequestId = 0;
+	private readonly pendingQuickPickResolvers = new Map<number, (index: number | null) => void>();
+
+	/**
 	 * `SvgRenderer.upsertImage` (the ported, unmodified renderer — see its
 	 * own doc comment) only re-derives a node's image `href` when that
 	 * node's text/size/side actually changed; a plain `update()` call after
@@ -324,6 +392,30 @@ class MindMapApp implements ControllerListener {
 			const resolve = this.pendingWriteImageResolvers.get(m.id);
 			this.pendingWriteImageResolvers.delete(m.id);
 			resolve?.(m.embedText);
+			return;
+		}
+		if (m.type === "markdownFilesListed") {
+			const resolve = this.pendingListMarkdownFilesResolvers.get(m.id);
+			this.pendingListMarkdownFilesResolvers.delete(m.id);
+			resolve?.(m.files);
+			return;
+		}
+		if (m.type === "foreignDocumentRead") {
+			const resolve = this.pendingReadForeignDocumentResolvers.get(m.id);
+			this.pendingReadForeignDocumentResolvers.delete(m.id);
+			resolve?.(m.text);
+			return;
+		}
+		if (m.type === "foreignDocumentWritten") {
+			const resolve = this.pendingWriteForeignDocumentResolvers.get(m.id);
+			this.pendingWriteForeignDocumentResolvers.delete(m.id);
+			resolve?.();
+			return;
+		}
+		if (m.type === "quickPickResult") {
+			const resolve = this.pendingQuickPickResolvers.get(m.id);
+			this.pendingQuickPickResolvers.delete(m.id);
+			resolve?.(m.index);
 			return;
 		}
 		if (m.type !== "setDocument") return;
@@ -770,26 +862,206 @@ class MindMapApp implements ControllerListener {
 		this.openLink(relation.linkKind, relation.rawTarget);
 	}
 
+	/** Display label for a node in the relation-target picker (R1a authoring): its link-stripped text, truncated so long node text doesn't blow out the QuickPick list. Mirrors the reference's `relationOptionLabel`. */
+	private relationOptionLabel(node: MindNode): string {
+		const text = getDisplayText(node.text).trim() || "(untitled)";
+		return text.length > 48 ? `${text.slice(0, 48)}…` : text;
+	}
+
+	/**
+	 * Ctrl/Cmd+K (R3/R5, extended by R1a item 6 and R4; reference `7578f31`
+	 * "Redesign the relation/link modal"): lists every relation/link already
+	 * on the node — each individually removable — plus a radio-gated add
+	 * flow: *Document relation* (default) or *Link* (the original free-text
+	 * wikilink/URL/path form). Adding appends to the node's text
+	 * (`appendLinkText`, D7) rather than replacing it, so one node can carry
+	 * multiple relations (R5); every add/remove commits immediately via the
+	 * same `commitRename` path every other edit already uses — no separate
+	 * "Save", just "Close".
+	 *
+	 * The relation-target picker itself is a **user-decided fork from the
+	 * reference**: instead of rebuilding the reference's hand-rolled
+	 * searchable plain-DOM combobox (`f58b3c1`), this drives VS Code's
+	 * native `showQuickPick` for both the "pick a document" and "pick a
+	 * node in it" steps (see `pickAndAddRelation` below) — see DECISIONS.md's
+	 * dated entry for the full reasoning.
+	 */
 	private openLinkEditor(nodeId: string): void {
 		if (!this.controller) return;
 		const node = this.controller.model.byId.get(nodeId);
 		if (!node) return;
-		const existing = getSoleLink(node.text);
+		const model = this.controller.model;
+
+		const relationTargets: RelationTargetOption[] = [];
+		const collectTargets = (n: MindNode) => {
+			if (n !== node) relationTargets.push({ id: n.id, label: this.relationOptionLabel(n) });
+			n.children.forEach(collectTargets);
+		};
+		collectTargets(model.root);
+
+		// R4: parsed foreign-file models, cached for this modal session only
+		// (a fresh Map every time the modal opens — same scope/lifetime as
+		// the reference's own `foreignModelCache`) so re-picking the same
+		// document (or re-adding a second relation into it) doesn't re-read/
+		// re-parse it.
+		const foreignModelCache = new Map<string, ReturnType<typeof parseMindMap>>();
+		const currentItems = () => listNodeLinkItems(node, model, this.title);
 
 		this.linkModal?.destroy();
 		this.linkModal = new LinkModal(this.container, {
-			initialLabel: existing?.label ?? node.text,
-			initialKind: existing?.kind ?? "wikilink",
-			initialTarget: existing?.target ?? "",
-			hasExistingLink: existing !== null,
-			onSave: (result) => this.controller?.commitRename(nodeId, buildLinkText(result)),
-			onRemove: () => {
-				if (existing) this.controller?.commitRename(nodeId, existing.label);
+			items: currentItems(),
+			onPickAndAddRelation: (label) => this.pickAndAddRelation(nodeId, label, relationTargets, foreignModelCache, currentItems),
+			onAddLink: (kind, target, label) => {
+				const finalKind: LinkKind = isUrlTarget(target) || isAbsoluteFilesystemPath(target) ? "mdlink" : kind;
+				const linkText = buildLinkText({ label, kind: finalKind, target });
+				this.controller?.commitRename(nodeId, appendLinkText(node.text, linkText));
+				return currentItems();
+			},
+			onRemoveItem: (occurrenceIndex) => {
+				this.controller?.commitRename(nodeId, removeLinkOccurrence(node.text, occurrenceIndex));
+				return currentItems();
 			},
 			onClose: () => {
 				this.linkModal = null;
 				this.container.focus();
 			},
+		});
+	}
+
+	/**
+	 * The QuickPick-driven two-step relation-target picker (user decision,
+	 * see DECISIONS.md): step 1 picks a document (current document first,
+	 * per `CURRENT_DOCUMENT_ID`, then every other workspace `.md` file via
+	 * `requestListMarkdownFiles`); step 2 picks a node inside it (the
+	 * current document's node list is already in memory —
+	 * `relationTargets` — with **no host round trip at all**; any other
+	 * document is read+parsed once via `resolveRelationTargetsForDocument`,
+	 * `sync/foreignRelation.ts`, ported unmodified since Phase A). Returns
+	 * `null` — and commits nothing — the instant either QuickPick step
+	 * comes back cancelled (`index === null`, Escape/click-away), matching
+	 * the task's cancel-safety requirement: no partial insert.
+	 *
+	 * Mutation on a successful pick is exactly the reference's own
+	 * same-doc/foreign-doc logic, verbatim from already-ported core
+	 * functions — nothing new invented here: `forcePersistentId`
+	 * (sync/metadata.ts) mints the target's persistent block id,
+	 * `buildLinkText`/`appendLinkText` (model/links.ts) build the new node
+	 * text, `Controller.commitRename` commits it (undo/redo, debounced
+	 * write-back all unchanged); the foreign-file case additionally goes
+	 * through `commitForeignRelationTarget` (sync/foreignRelation.ts) for
+	 * the read-modify-write against the *other* file.
+	 */
+	private async pickAndAddRelation(
+		nodeId: string,
+		label: string,
+		relationTargets: RelationTargetOption[],
+		foreignModelCache: Map<string, ReturnType<typeof parseMindMap>>,
+		currentItems: () => ReturnType<typeof listNodeLinkItems>
+	): Promise<ReturnType<typeof listNodeLinkItems> | null> {
+		if (!this.controller) return null;
+		const node = this.controller.model.byId.get(nodeId);
+		if (!node) return null;
+
+		const foreignFiles = await this.requestListMarkdownFiles();
+		const documents: { id: string; label: string }[] = [
+			{ id: CURRENT_DOCUMENT_ID, label: `${this.title} (current)` },
+			...foreignFiles.map((f) => ({ id: f.path, label: f.basename })),
+		];
+
+		const docIndex = await this.requestQuickPick(
+			documents.map((d) => ({ label: d.label })),
+			"Pick the document the target node lives in"
+		);
+		if (docIndex === null) return null; // Escape/click-away — no-op, per the cancel-safety contract
+		const selectedDoc = documents[docIndex];
+
+		let nodeTargets: RelationTargetOption[];
+		if (selectedDoc.id === CURRENT_DOCUMENT_ID) {
+			nodeTargets = relationTargets;
+		} else {
+			nodeTargets = await resolveRelationTargetsForDocument(selectedDoc.id, relationTargets, {
+				vault: { cachedRead: async (f) => (await this.requestReadForeignDocument(f.path)) ?? "" },
+				resolveFile: (p) => ({ path: p, basename: basenameNoExt(p) }),
+				models: foreignModelCache,
+				labelFor: (n) => this.relationOptionLabel(n),
+			});
+		}
+
+		const nodeIndex = await this.requestQuickPick(
+			nodeTargets.map((t) => ({ label: t.label })),
+			"Pick the target node"
+		);
+		if (nodeIndex === null) return null; // Escape/click-away — no-op
+		const pickedTarget = nodeTargets[nodeIndex];
+
+		if (selectedDoc.id === CURRENT_DOCUMENT_ID) {
+			const targetNode = this.controller.model.byId.get(pickedTarget.id);
+			if (!targetNode) return null;
+			const id = forcePersistentId(targetNode, this.controller.model.byId);
+			const linkText = buildLinkText({ label: label || pickedTarget.label, kind: "wikilink", target: `#^${id}` });
+			this.controller.commitRename(nodeId, appendLinkText(node.text, linkText));
+			return currentItems();
+		}
+
+		// R4: foreign-file target — a one-off read-modify-write outside the
+		// current file's live debounced pipeline (see foreignRelation.ts).
+		const cachedModel = foreignModelCache.get(selectedDoc.id);
+		const pickerNode = cachedModel?.byId.get(pickedTarget.id);
+		if (!pickerNode) return null;
+		const basename = basenameNoExt(selectedDoc.id);
+		const result = await commitForeignRelationTarget(
+			{
+				cachedRead: async (f) => (await this.requestReadForeignDocument(f.path)) ?? "",
+				modify: (f, data) => this.requestWriteForeignDocument(f.path, data),
+			},
+			{ path: selectedDoc.id, basename },
+			pickerNode
+		);
+		if (!result) return null; // foreign file changed shape since the picker was populated — nothing safe to link to
+		const linkText = buildLinkText({ label: label || pickedTarget.label, kind: "wikilink", target: `${basename}#^${result.targetId}` });
+		this.controller.commitRename(nodeId, appendLinkText(node.text, linkText));
+		return currentItems();
+	}
+
+	/** R4: every vault `.md` file (D6 — not frontmatter-filtered), excluding this document itself — see `MindMapEditorProvider.listMarkdownFiles`. */
+	private requestListMarkdownFiles(): Promise<{ path: string; basename: string }[]> {
+		const id = ++this.listMarkdownFilesRequestId;
+		return new Promise((resolve) => {
+			this.pendingListMarkdownFilesResolvers.set(id, resolve);
+			this.vscode.postMessage({ type: "listMarkdownFiles", id });
+		});
+	}
+
+	/** One-shot read of a foreign workspace file's text (`ForeignVaultReader.cachedRead`'s host-round-trip implementation) — see `MindMapEditorProvider.readForeignDocument`. */
+	private requestReadForeignDocument(path: string): Promise<string | null> {
+		const id = ++this.readForeignDocumentRequestId;
+		return new Promise((resolve) => {
+			this.pendingReadForeignDocumentResolvers.set(id, resolve);
+			this.vscode.postMessage({ type: "readForeignDocument", id, path });
+		});
+	}
+
+	/** Writes a foreign workspace file's text (`ForeignVaultWriter.modify`'s host-round-trip implementation) — see `MindMapEditorProvider.writeForeignDocument`. Resolves once the host acks, regardless of whether the write actually succeeded (a failed write is not this call's problem to surface — `commitForeignRelationTarget`'s caller has no fallback path for it either way, matching the reference's own fire-and-forget `vault.modify`). */
+	private requestWriteForeignDocument(path: string, text: string): Promise<void> {
+		const id = ++this.writeForeignDocumentRequestId;
+		return new Promise((resolve) => {
+			this.pendingWriteForeignDocumentResolvers.set(id, () => resolve());
+			this.vscode.postMessage({ type: "writeForeignDocument", id, path, text });
+		});
+	}
+
+	/**
+	 * Shows a native `vscode.window.showQuickPick` (user-decided platform
+	 * fork, see DECISIONS.md) and resolves with the picked item's index, or
+	 * `null` if the user dismissed it (Escape/click-away) — see
+	 * `MindMapEditorProvider.showQuickPick`'s own doc comment for why an
+	 * index, not the item, round-trips.
+	 */
+	private requestQuickPick(items: { label: string; description?: string }[], placeholder?: string): Promise<number | null> {
+		const id = ++this.quickPickRequestId;
+		return new Promise((resolve) => {
+			this.pendingQuickPickResolvers.set(id, resolve);
+			this.vscode.postMessage({ type: "showQuickPick", id, items, placeholder });
 		});
 	}
 
