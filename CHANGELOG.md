@@ -1,8 +1,30 @@
 # Changelog
 
 All notable changes to the Mind Map View extension. This covers milestones
-M0–M5 of the initial port from the Obsidian reference plugin; there has been
-no public release yet (`version` in `package.json` is still `0.0.1`).
+M0–M5 of the initial port from the Obsidian reference plugin, plus a
+post-M5 catch-up bringing over feature work the reference plugin gained
+afterward; there has been no public release yet (`version` in
+`package.json` is still `0.0.1`).
+
+## Unreleased — Post-M5 catch-up: node relations & status badges
+
+Catch-up work bringing this extension in line with feature additions made
+to the reference Obsidian plugin after this repo's M0 port point. Not part
+of the original M0–M5 milestone plan.
+
+- **Node relations:** a relation between two nodes — same-document or
+  cross-document — can now be authored and viewed. Same-document relations
+  render as an arrow between the two nodes; cross-document relations render
+  as a clickable badge that opens the target file. `Ctrl/Cmd+K` (the link
+  editor, redesigned into a combined "Links & relations" modal) adds a
+  "Document relation" via a two-step VS Code Quick Pick (pick the file,
+  then pick a node in it), alongside the existing free-text link form. New
+  `mindmapView.showRelations` setting (default on) toggles the whole layer.
+- **Status badges:** a node can be marked Done, Started, Blocked, Red Flag,
+  Green Flag, or Ready to work on. `Ctrl/Cmd+Shift+D` toggles Done directly;
+  `Ctrl/Cmd+Shift+I` opens a quick-pick (anchored to the node) listing all
+  six plus "Clear status"; the same options are also in the right-click
+  context menu.
 
 ## Unreleased — M5: hardening & release readiness
 

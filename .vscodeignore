@@ -39,3 +39,9 @@ RELEASING.md
 .DS_Store
 **/.DS_Store
 *.map
+
+# Stray untracked scratch files left in the repo root from manual F5
+# testing (e.g. clipboard-image-paste verification) — never part of the
+# shipped extension.
+MindMapBaba.md
+pasted-image-*.png

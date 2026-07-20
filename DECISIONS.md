@@ -1945,3 +1945,93 @@ cross-doc) can be both authored (via Ctrl/Cmd+K's "Document relation" add
 flow) and consumed (arrow/badge rendering, click-to-open, `showRelations`
 toggle) entirely through VS Code UI. No further escalation open for this
 phase.
+
+## 2026-07-20 — Phase D: trademark scrub, README/CHANGELOG updates, final consolidated benchmark re-run, re-package
+
+**Scope:** the closing cleanup phase of the post-M5 catch-up (Phases
+A–C brought node relations and status badges over from the reference
+plugin). No production code in `webview/{model,layout,render,sync,
+controller}` touched — this phase is docs, a trademark scrub, and a
+verification/packaging pass, per its own task scope.
+
+**Trademark scrub, mirroring reference commit `e5eea50`:** grepped this
+repo case-insensitively for "XMind" across `*.md`/`*.ts`/`*.css`/`*.json`.
+Found and fixed three real occurrences: `package.json`'s `description`
+("XMind-like…" → "Mind mapping custom editor for markdown files, with
+true bidirectional sync." — dropped the trademark rather than substituting
+a paraphrase, since the sentence reads fine without it); `README.md`'s
+intro line and its R1 feature-table row (both → "in the style of a
+traditional desktop mind-mapper" / "familiar desktop-mind-mapper
+interaction model" — following the reference's own replacement wording
+almost verbatim, since it fits here too); and a code comment in
+`media/mindmap.css` (`XMind-style` → `in the classic mind-map style`,
+same substitution the reference made to the analogous comment in its own
+`styles.css`). **Two files intentionally left untouched per the task's
+explicit instruction:** `CLAUDE.md` and `vscode-mindmap-extension-plan.md`
+are project-instruction/planning documents, not shipped marketing copy —
+their "XMind-like" phrasing describes the original design brief and
+rewriting it would blur the historical record of what was actually asked
+for. **Confirmed zero remaining case-insensitive "XMind" matches anywhere
+else** (`grep -rni xmind` over `*.md`/`*.ts`/`*.css`/`*.json`, excluding
+`node_modules`) after the fix — including no stray hits in DECISIONS.md's
+own historical entries (this phase's own file) or PROGRESS.md.
+
+**README.md / CHANGELOG.md — documented the two Phase A–C features at the
+same detail level as the existing R1–R20 list:** added R21 (node
+relations: same-doc arrows, cross-doc badges, the Ctrl/Cmd+K "Document
+relation" QuickPick add flow, `mindmapView.showRelations`) and R22 (status
+badges: the six badges, `Ctrl/Cmd+Shift+D` toggle-done, `Ctrl/Cmd+Shift+I`
+quick-pick, context-menu entries) to README's feature table; added both
+new shortcuts to the keyboard-shortcut table and the "chords VS Code would
+otherwise intercept" sentence; added `showRelations` to the settings
+table. `CHANGELOG.md` gained a new "Unreleased — Post-M5 catch-up: node
+relations & status badges" section, describing this as what it is (an
+unplanned catch-up body of work, not part of the original M0–M5 milestone
+numbering) rather than folding it into the M5 section or inventing a fake
+milestone number.
+
+**Packaging hygiene fix (found while re-packaging, not part of the
+original task list but a real bug in the packaged artifact):** the first
+`npm run package` run of this phase picked up two untracked,
+uncommitted files sitting in the repo root —
+`MindMapBaba.md` and `pasted-image-20260718003555.png` (a 39 KB image) —
+inflating the `.vsix` to 75.45 KB. Root cause: `.vscodeignore` only lists
+specific known paths (no catch-all), and `vsce` does not consult
+`.gitignore` for files that were never `git add`ed, so untracked scratch
+files in the repo root ship by default. Added two lines to
+`.vscodeignore` (`MindMapBaba.md`, `pasted-image-*.png`) — the corrected
+package is 48.33 KB. Did **not** delete the two stray files themselves
+(out of scope for this phase to unilaterally remove workspace files the
+user didn't ask about); flagged to the user/coordinator in the final
+report instead.
+
+**Final consolidated benchmark re-run:** `uptime` showed a load average of
+3.35 (1-min, 8 cores) before running — moderate, and `npm test`'s own
+2.82s completion time (normal range ~2.5–3.5s) confirmed the run wasn't
+contaminated (unlike one earlier M3 run, where the suite itself ran ~13x
+slower and its numbers were correctly discarded). `npm run build` clean;
+`npm test` — **492 passed, 0 skipped** (36 files), unchanged from Phase C
+since no production behavior changed this phase. `bench:m1`/`bench:m2`/
+`bench:open`/`bench:images`/`bench:relations` all re-run and all within
+budget, every figure within noise of its Phase A–C counterpart — no
+regression anywhere in the whole M0–M5 + Phase A–D history. Full
+consolidated table in `benchmarks.md`'s new "Phase D — final catch-up
+benchmarks" section (added specifically so this doesn't need
+reconstructing from eight scattered per-milestone sections later).
+
+**Core-integrity re-verification:** `diff -rq webview/{model,layout,sync,
+controller}` against reference HEAD — byte-identical, zero diffs (`diff -q`
+printed nothing, confirming — not assuming — the invariant holds).
+`render/SvgRenderer.ts` differs from reference HEAD only by the
+user-authorized additive `getViewport`/`setViewport` pair (`diff -u`
+shows one hunk, all `+` lines, zero `-` lines) — same as every prior
+milestone's check.
+
+**`RELEASING.md` — checked, not changed:** still references the
+placeholder `"publisher": "TODO-set-publisher-id"`; still describes but
+does not execute anything (`vsce publish`, git tag/push). Phases A–D
+changed nothing about the release process, so no edit was needed —
+confirmed rather than assumed.
+
+**Cost:** none — this phase is docs, a packaging-config fix, and
+verification; zero runtime code changed.

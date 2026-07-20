@@ -1,7 +1,7 @@
 {
 	"name": "mindmap-view",
 	"displayName": "Mind Map View",
-	"description": "XMind-like mind mapping custom editor for markdown files, with true bidirectional sync.",
+	"description": "Mind mapping custom editor for markdown files, with true bidirectional sync.",
 	"version": "0.0.1",
 	"publisher": "TODO-set-publisher-id",
 	"private": true,

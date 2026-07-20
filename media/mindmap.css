@@ -103,7 +103,7 @@ body {
 }
 
 /* Only the main topic (root) gets a visible box — sub-topics render as bare
-   text over the connecting line, XMind-style. The rect stays in the DOM for
+   text over the connecting line, in the classic mind-map style. The rect stays in the DOM for
    every node (hit-testing + the selection/drop-target outline below), just
    invisible by default; `pointer-events: all` keeps it clickable/draggable
    even though there's nothing painted to hit-test against. */

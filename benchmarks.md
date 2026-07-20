@@ -1008,3 +1008,104 @@ wikilink:
   redesign (display text, kind dropdown defaulting to "URL or file path",
   target field) — and the modal stays open afterward (D7) rather than
   auto-closing, so a second add can follow immediately.
+
+## Phase D — final catch-up benchmarks (consolidated verdict, docs + re-package)
+
+Closing phase of the post-M5 catch-up (trademark scrub, README/CHANGELOG
+updates, a full benchmark re-run with relations/status badges fully live,
+re-packaging). No production code in `webview/{model,layout,render,sync,
+controller}` changed this phase — this section exists so a future reader
+can see the whole M0–M5 + Phase A–D history's final numbers in one place
+instead of reconstructing it from eight scattered sections.
+
+**Machine load check:** `uptime` showed a load average of 3.35 (1-min) on
+an 8-core machine before this run — moderate, not the "heavy load"
+condition that contaminated one earlier M3 run (that case had `npm test`
+itself running ~13x slower than normal). This run's `npm test` completed
+in **2.82s**, squarely inside the normal ~2.5–3.5s range, so these numbers
+are treated as clean/authoritative, not flagged for a later idle re-run.
+
+### Test suite
+
+**492 passed / 0 skipped** (36 files) — unchanged from Phase C; no test
+was added, removed, or modified this phase (no production behavior
+changed, only docs/comments/packaging config).
+
+### `npm run build`
+
+Clean (`tsc -noEmit` x2 + esbuild production build), no errors or warnings.
+
+### Benchmarks — full re-run, all within budget
+
+| Bench | Metric | 100 | 500 | 2,000 | 5,000 | Budget (target/ceiling) |
+|---|---|---|---|---|---|---|
+| `bench:m1` | parse+layout total | 3.5ms | 5.4ms | 15.6ms | 36.2ms | 300ms(100–500) / 1000ms(2k) / 2000ms(5k) |
+| `bench:m2` | Tab | 3.7ms | 3.5ms | 9.0ms | 25.7ms | 50ms / 100ms |
+| `bench:m2` | rename | 2.4ms | 3.4ms | 10.7ms | 25.1ms | 50ms / 100ms |
+| `bench:m2` | delete | 2.3ms | 3.4ms | 10.8ms | 21.1ms | 50ms / 100ms |
+| `bench:m2` | fold | 2.0ms | 3.8ms | 7.7ms | 15.3ms | 50ms / 100ms |
+| `bench:m2` | unfold | 5.6ms | 5.9ms | 10.5ms | 22.9ms | 50ms / 100ms |
+| `bench:m2` | serialize | 0.3ms | 0.2ms | 0.3ms | 0.6ms | (informational) |
+| `bench:open` | full open total | 25.9ms | 11.4ms | 16.1ms | 35.7ms | 300ms / 1000ms / 2000ms |
+
+`bench:images` (201 nodes, 200 image embeds): open 47.3ms (budget 1000ms),
+pan-dispatch 3.0ms — matches the M4 baseline within noise.
+
+`bench:relations` (relations fully live, including the redesigned modal —
+this phase's one thing worth re-confirming since it's the newest hot
+path):
+
+```
+2000 nodes, 200 relations: open total=27.6ms OK  Tab=13.4ms OK
+  rename(relation source)=12.5ms OK  pan-dispatch=2.9ms  serialize=1.2ms
+5000 nodes, 500 relations: open total=38.6ms OK  Tab=24.9ms OK
+  rename(relation source)=27.7ms OK  pan-dispatch=0.2ms  serialize=1.5ms
+```
+
+Every number above is within noise of its Phase C counterpart (e.g. 2k Tab
+13.4ms here vs. 15.0ms in Phase C; 2k open 27.6ms vs. 30.4ms) — expected,
+since nothing in the hot path changed this phase.
+
+**Consolidated verdict: every M0–M5 and Phase A–C budget is still met at
+Phase D.** No regression anywhere across the whole catch-up body of work.
+Relations and status badges (Phases A–C) add real, measured per-frame/
+per-keystroke cost (`resolveRelations` on every `onChange`,
+`upsertStatusBadge` on every `update()`) and it remains comfortably inside
+every budget at both the 2,000-node target size and the 5,000-node stress
+size.
+
+### Bundle size
+
+`npm run package` (after fixing a `.vscodeignore` gap — see below):
+**`mindmap-view-0.0.1.vsix` is 48.33 KB** (9 files: `LICENSE.txt`,
+`changelog.md`, `package.json`, `readme.md`, `dist/extension.js` 9.8 KB,
+`media/mindmap.css` 20.91 KB, `media/webview.js` 89.75 KB pre-compression).
+Up from the M5 baseline of ~39.7 KB — the increase is Phases A–C's actual
+shipped code (`model/relations.ts`, `model/statusBadges.ts`, the
+redesigned `LinkModal.ts`, `sync/foreignRelation.ts`, the new CSS rules,
+the QuickPick/context-menu/keybinding wiring in `webview/main.ts` and
+`package.json`). **48.33 KB is ~9.7% of the 500 KB target, ~4.8% of the
+1 MB hard ceiling** — comfortably inside both.
+
+**Packaging hygiene fix made this phase:** the first `npm run package` run
+picked up two untracked, uncommitted scratch files sitting in the repo
+root — `MindMapBaba.md` and `pasted-image-20260718003555.png` (a 39 KB
+image, evidently a leftover from manual clipboard-paste testing) — because
+`.vscodeignore` only lists specific known paths, not a catch-all, and
+`vsce` doesn't consult `.gitignore` for files that were never `git add`ed.
+These aren't part of the extension and inflated the first packaging
+attempt to 75.45 KB. Added two lines to `.vscodeignore`
+(`MindMapBaba.md`, `pasted-image-*.png`) and re-ran — the 48.33 KB figure
+above is the corrected one. Flagged to the coordinator/user since these
+two files still sit untracked in the repo root; not deleted here (out of
+scope for this phase — deleting workspace files the user didn't ask about
+is not this phase's call).
+
+### `RELEASING.md` sanity check
+
+Re-read against current `package.json`/repo state: still accurate.
+`"publisher"` is still the placeholder `"TODO-set-publisher-id"` (Phases
+A–D never touched it); no `"repository"` field was added (still no git
+remote configured); nothing in `RELEASING.md` was executed (no `vsce
+publish`, no git tag/push) — consistent with the hard rules. No edits
+needed.

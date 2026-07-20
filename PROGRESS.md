@@ -8,7 +8,7 @@ Implementation is done by a Sonnet 5 agent, milestone by milestone, with a
 review gate after each milestone; performance trade-offs are decided by the
 user, never by the agent (rule 3).
 
-_Last updated: 2026-07-20 (Phase C of the post-M5 catch-up completed — node relations fully wired to VS Code UI/host, including the redesigned relation/link modal with a native-QuickPick-driven target picker, the one piece the user steered on; see PROGRESS.md's dated Phase C section and DECISIONS.md's two dated Phase C entries)._
+_Last updated: 2026-07-20 (Phase D of the post-M5 catch-up completed — trademark scrub, README/CHANGELOG updates for node relations and status badges, a final consolidated benchmark re-run (492 tests, all budgets clear), and re-packaging (48.33 KB vs. the 500 KB target). The whole post-M5 catch-up (Phases A–D) is now complete; see PROGRESS.md's dated Phase D section and DECISIONS.md's dated Phase D entry)._
 
 ## Milestone status
 
@@ -34,7 +34,7 @@ same way the milestones were:
 | A | Re-sync the platform-free core (`model/layout/render/sync/controller` + `webview/ui/InlineEditor.ts`) to the reference's current state; port new/updated tests; keep the build green with new features dormant | **Done** |
 | B | Status badges: VS Code wiring (keyboard shortcuts, context-menu items, click handlers) | **Done** |
 | C | Node relations: VS Code wiring (redesigned relation modal/combobox, cross-document host-side file reader, `showRelations` setting, styles, external-link-opening fix, center-into-view UX fixes) | **Done** — the one escalation (QuickPick vs. plain-DOM combobox) was resolved by the user (QuickPick) and built; see below |
-| D | Docs (XMind-trademark scrub, README/CHANGELOG updates), re-benchmark with features live, re-package | Pending |
+| D | Docs (XMind-trademark scrub, README/CHANGELOG updates), re-benchmark with features live, re-package | **Done** — whole post-M5 catch-up (Phases A–D) now complete |
 
 ## M0 — done
 
@@ -573,6 +573,53 @@ now resolved by the user and built). Reference commits
 both authored (Ctrl/Cmd+K's "Document relation" add flow) and consumed
 (arrow/badge rendering, click-to-open, `showRelations` toggle) entirely
 through VS Code UI. No escalation remains open for this phase.
+
+## Phase D — done (post-M5 catch-up: trademark scrub, docs, final benchmarks, re-package)
+
+Closing cleanup phase — no production code changed. Full reasoning in
+DECISIONS.md's dated "Phase D" entry; summary:
+
+- **XMind trademark scrub** (mirroring reference commit `e5eea50`): fixed
+  the three real occurrences found by a repo-wide case-insensitive grep —
+  `package.json`'s `description`, two spots in `README.md`, and a comment
+  in `media/mindmap.css`. `CLAUDE.md` and `vscode-mindmap-extension-plan.md`
+  intentionally left untouched (project-instruction/planning docs, not
+  shipped copy, per the task's explicit carve-out). Zero remaining matches
+  confirmed afterward.
+- **README.md / CHANGELOG.md updated:** README gained R21 (node relations)
+  and R22 (status badges) feature rows, both new keyboard shortcuts, and
+  the `showRelations` setting row. CHANGELOG.md gained a new "Unreleased —
+  Post-M5 catch-up: node relations & status badges" section.
+- **Packaging hygiene fix (found while re-packaging):** two untracked
+  scratch files in the repo root (`MindMapBaba.md`,
+  `pasted-image-20260718003555.png`) were shipping inside the `.vsix`
+  because `.vscodeignore` doesn't consult `.gitignore` for never-`git
+  add`ed files. Added two lines to `.vscodeignore` to exclude them.
+  Flagged, not deleted (out of scope to remove workspace files
+  unilaterally).
+- **Final consolidated benchmark re-run:** machine load checked via
+  `uptime` first (moderate; `npm test`'s own 2.82s runtime confirmed the
+  run wasn't contaminated). `npm run build` clean; `npm test` — **492
+  passed / 0 skipped**, unchanged from Phase C. `bench:m1`/`bench:m2`/
+  `bench:open`/`bench:images`/`bench:relations` all re-run, all within
+  budget, no regression anywhere across the whole M0–M5 + Phase A–D
+  history. Consolidated table added to `benchmarks.md`'s new "Phase D"
+  section.
+- **Re-packaged:** `mindmap-view-0.0.1.vsix` is **48.33 KB** (up from the
+  M5 baseline of ~39.7 KB, reflecting Phases A–C's actual shipped code) —
+  ~9.7% of the 500 KB target, ~4.8% of the 1 MB hard ceiling.
+- **`RELEASING.md`:** checked, unchanged — still references the
+  placeholder publisher id, still doesn't execute anything; Phases A–D
+  never touched the release process.
+- **Core-integrity re-check:** `webview/{model,layout,sync,controller}`
+  reconfirmed byte-identical to reference HEAD; `render/SvgRenderer.ts`
+  still differs only by the additive `getViewport`/`setViewport` pair.
+- Not committed — left for the user, same as every phase so far.
+
+**The whole post-M5 catch-up (Phases A–D) is now complete.** Node
+relations and status badges are fully re-synced, wired to VS Code UI, and
+documented; docs, benchmarks, and packaging all reflect the final state;
+no escalation remains open.
 
 ## Decisions taken so far
 

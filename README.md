@@ -1,6 +1,6 @@
 # Mind Map View
 
-An XMind-like mind mapping editor for `.md` files, built directly into VS
+A mind mapping editor, in the style of a traditional desktop mind-mapper, for `.md` files, built directly into VS
 Code. It reads and writes plain markdown — headings and nested lists — with
 true bidirectional sync: edit the map, the file updates; edit the file (in a
 split view, another editor, git, whatever), the map updates. There is no
@@ -15,7 +15,7 @@ model.
 
 | # | Feature |
 |---|---|
-| R1 | XMind-like interaction model: click/drag to select and pan, keyboard-first editing |
+| R1 | Familiar desktop-mind-mapper interaction model: click/drag to select and pan, keyboard-first editing |
 | R2 | `Tab` creates a child of the selected node, immediately editable |
 | R3 | `Enter` creates a sibling after the selected node; `Shift+Enter` creates one before it |
 | R4 | Full keyboard map — navigate, rename, delete, fold, zoom, undo/redo (see table below) |
@@ -36,6 +36,8 @@ model.
 | R19 | Depth-scaled visual hierarchy — font and box size shrink with depth |
 | R20 | Toggle between the mind map and the plain markdown editor on the same tab with `Ctrl/Cmd+M` |
 | — | Paste an image from the clipboard directly into the map — it's saved next to your file (or wherever `mindmapView.pastedImageFolder` points) and embedded automatically |
+| R21 | Node relations: same-document relations render as arrows between nodes; cross-document relations render as a clickable badge that opens the target file. `Ctrl/Cmd+K` (the link editor) also lets you add a "Document relation" — pick a file, then a node in it, via VS Code's native Quick Pick — alongside plain links. Toggle the whole layer with `mindmapView.showRelations` |
+| R22 | Status badges: mark a node Done, Started, Blocked, Red Flag, Green Flag, or Ready to work on. `Ctrl/Cmd+Shift+D` toggles Done directly; `Ctrl/Cmd+Shift+I` opens a quick-pick of all six (plus Clear status) anchored to the node; the same six also appear in the right-click context menu |
 
 ## Getting started
 
@@ -71,6 +73,8 @@ items become nested list items.
 | `Ctrl/Cmd+K` | Edit the selected node's link |
 | `Ctrl/Cmd+/` | Toggle fold on the selected node |
 | `Ctrl/Cmd+Shift+B` | Rebalance (clear manual positions, reflow) |
+| `Ctrl/Cmd+Shift+D` | Toggle the selected node's "Done" status |
+| `Ctrl/Cmd+Shift+I` | Open a quick-pick to set (or clear) the selected node's status |
 | `Ctrl/Cmd+C` / `X` / `V` | Copy / cut / paste (single or multi-selection; also accepts pasted external markdown/plain text, or a pasted clipboard image) |
 | `Ctrl/Cmd+Home` | Center the view on the root |
 | `Ctrl/Cmd+M` | Toggle this tab between the mind map and the plain markdown editor |
@@ -78,11 +82,11 @@ items become nested list items.
 | Click‑drag empty canvas | Pan |
 | Right‑click a node | Open its context menu |
 
-`Ctrl/Cmd+Z/Shift+Z/Y/F/K/Shift+B/M` are chords VS Code would otherwise
-intercept before they reach the webview, so they're wired through
-`contributes.keybindings` scoped to the mind map editor — they only fire
-while a mind map tab is focused (or, for the markdown-ward direction of
-`Ctrl/Cmd+M`, while a markdown text editor is focused).
+`Ctrl/Cmd+Z/Shift+Z/Y/F/K/Shift+B/M/Shift+D/Shift+I` are chords VS Code
+would otherwise intercept before they reach the webview, so they're wired
+through `contributes.keybindings` scoped to the mind map editor — they
+only fire while a mind map tab is focused (or, for the markdown-ward
+direction of `Ctrl/Cmd+M`, while a markdown text editor is focused).
 
 ## How the sync works
 
@@ -119,6 +123,7 @@ All under `mindmapView.*`:
 | `headingDepth` | `1` | Nodes at or above this depth are written as headings; deeper nodes become list items. Takes effect on next open. |
 | `layoutMode` | `"balanced"` | `balanced` / `right-only` / `left-only` — how first-level branches are arranged around the root. Takes effect on next open. |
 | `pastedImageFolder` | `""` (alongside the file) | Folder, relative to the file's own folder, where clipboard-pasted images are saved. Applies to the next paste immediately. |
+| `showRelations` | `true` | Show same-document relation arrows and cross-document relation badges. Takes effect the next time a map is opened. |
 
 ## Requirements
 
