@@ -403,6 +403,22 @@ describe("MindMapEditorProvider (host)", () => {
 		}
 	});
 
+	/** Phase B: Ctrl/Cmd+Shift+D (toggle "Done") / Ctrl/Cmd+Shift+I (status quick-pick) are routed the same conservative way as every other chord VS Code might intercept — see package.json's `contributes.keybindings` and DECISIONS.md's dated "Phase B" entry. */
+	it("routes mindmapView.toggleStatusDone/statusQuickPick to the active panel only, same as the other chord-routed commands", async () => {
+		const provider = register();
+		const activePanel = makeFakeWebviewPanel();
+		const doc = makeFakeDocument("# Root\n");
+		await provider.resolveCustomTextEditor(doc as unknown as import("vscode").TextDocument, activePanel as unknown as import("vscode").WebviewPanel, {} as import("vscode").CancellationToken);
+
+		for (const [command, name] of [
+			["mindmapView.toggleStatusDone", "toggleStatusDone"],
+			["mindmapView.statusQuickPick", "statusQuickPick"],
+		] as const) {
+			fakeVscode.registeredCommands.get(command)?.();
+			expect(activePanel.webview.postMessage).toHaveBeenCalledWith({ type: "command", name });
+		}
+	});
+
 	it("openLink: a scheme-qualified URL opens via vscode.env.openExternal, not vscode.open", async () => {
 		const provider = register();
 		const panel = makeFakeWebviewPanel();

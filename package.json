@@ -70,6 +70,14 @@
 				"title": "Mind Map: Toggle Fold"
 			},
 			{
+				"command": "mindmapView.toggleStatusDone",
+				"title": "Mind Map: Toggle 'Done' Status"
+			},
+			{
+				"command": "mindmapView.statusQuickPick",
+				"title": "Mind Map: Set Node Status..."
+			},
+			{
 				"command": "mindmapView.toggleToText",
 				"title": "Mind Map: Switch to Markdown Editor"
 			},
@@ -118,6 +126,18 @@
 				"command": "mindmapView.toggleFold",
 				"key": "ctrl+/",
 				"mac": "cmd+/",
+				"when": "activeCustomEditorId == 'mindmapView.editor'"
+			},
+			{
+				"command": "mindmapView.toggleStatusDone",
+				"key": "ctrl+shift+d",
+				"mac": "cmd+shift+d",
+				"when": "activeCustomEditorId == 'mindmapView.editor'"
+			},
+			{
+				"command": "mindmapView.statusQuickPick",
+				"key": "ctrl+shift+i",
+				"mac": "cmd+shift+i",
 				"when": "activeCustomEditorId == 'mindmapView.editor'"
 			},
 			{

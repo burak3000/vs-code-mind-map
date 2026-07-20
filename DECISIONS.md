@@ -1468,3 +1468,131 @@ relations are actually wired to run on every `onChange` (Phase B/C),
 `resolveRelations`'s per-node work and the relations-layer arrow rendering
 become real per-edit costs worth re-measuring against budget at that point,
 not just at this dormant-code baseline.
+
+## 2026-07-20 — Phase B: wired status badges to VS Code UI (keyboard shortcuts, context menu, quick-pick, click handler)
+
+**Context:** Phase A (this same file's entry above) re-synced the
+platform-free status-badge model/renderer support from the reference
+plugin (`model/statusBadges.ts`'s 6 badges, `Controller.setStatusBadge`/
+`toggleStatusBadge`, `SvgRenderer`'s `upsertStatusBadge` rendering and
+`onStatusBadgeClick` hook) but deliberately left it dormant — no VS Code UI
+set or clicked a badge yet. This phase is that wiring, ported from the
+reference's commit `bfd6997` ("Add node status badges … Cmd+Shift+I/D
+shortcuts, and context-menu hotkey hints"), adapted from Obsidian's `Menu`/
+hotkey system to this repo's own conventions.
+
+**Keyboard shortcut interception — Ctrl/Cmd+Shift+D and Ctrl/Cmd+Shift+I
+routed as `contributes.keybindings` commands, not plain webview keydown:**
+this repo already has precedent for exactly this question — Ctrl/Cmd+Z/
+Shift+Z/Y (M2), Ctrl/Cmd+F (M3 search), Ctrl/Cmd+Shift+B (M3 rebalance),
+Ctrl/Cmd+/ (M3 fold), and Ctrl/Cmd+K (M3 link editor) are all VS Code-
+intercepted chords that never reach the webview's own `keydown` handler,
+so they're routed as `command` messages via `package.json`'s
+`contributes.keybindings` + `MindMapEditorProvider.ts`'s
+`registerRoutedCommand`/`postCommandToActivePanel` instead. Checked whether
+Ctrl/Cmd+Shift+D/I are free the same way Alt+Up/Down or Ctrl/Cmd+Home are
+(M3's own plain-webview-keydown chords): **no** — Ctrl+Shift+D is VS Code's
+own default binding for "Show Run and Debug" (the debug viewlet), a direct
+collision with the same shape of problem Ctrl+Shift+B (rebalance) already
+hit before M3 routed it as a command. Ctrl+Shift+I has carried a "Toggle
+Developer Tools" binding in some VS Code versions/builds. Per the task's
+explicit guidance ("safer to add the keybinding than to assume it's
+unnecessary"), both are routed conservatively as commands
+(`mindmapView.toggleStatusDone` / `mindmapView.statusQuickPick`) exactly
+like the other five, rather than risking a live collision that would
+silently swallow the shortcut in a real VS Code window (something no
+headless test here can catch — flagged in benchmarks.md's real-window
+checklist addition below).
+
+**Quick-pick UI — reused the existing plain-DOM `ContextMenu` overlay,
+positioned at the node instead of the mouse, rather than a fourth UI
+primitive:** the reference's Cmd+Shift+I opens the same Obsidian `Menu`
+its context-menu status section uses, just positioned at the node's screen
+rect (`showAtPosition`) instead of the mouse-click point (`showAtMouseEvent`).
+This repo has no Obsidian `Menu` — its equivalent, `webview/ui/
+ContextMenu.ts`, is a plain absolutely-positioned DOM overlay (R17, M3).
+Considered three options: (a) build a new "QuickPick" overlay type,
+(b) extend `ContextMenu` to support being opened at an arbitrary point
+with an arbitrary item list, (c) something VS Code-native (the host's own
+`vscode.window.showQuickPick`, which lives in the extension host, not the
+webview). Rejected (a): this repo already has four UI primitives
+(InlineEditor/SearchPanel/LinkModal/ContextMenu) and the task's own
+guidance was to escalate rather than invent a fifth; `ContextMenu`'s shape
+(a positioned list of clickable items, closes on Escape/outside-click) is
+already exactly what a quick-pick needs. Rejected (c): a host-side
+`showQuickPick` would need a round trip through `postMessage` for both
+opening it and receiving the choice, and would render as a native VS Code
+UI element positioned by VS Code's own logic, not glued to the node's
+on-canvas position the way the reference's node-anchored menu is — a
+worse fit for "look, this node has 6 possible statuses, right here."
+Chose (b): `ContextMenu.ts` already took `x`/`y` in container-relative
+coordinates (`showNodeMenu` derives them from `evt.clientX/Y` minus the
+container's own offset) — `SvgRenderer.getNodeScreenRect` (already
+additive since M5, used by the inline editor for the same reason: same
+container-relative coordinate space) needed no change to slot into the
+same `x`/`y` fields. **No performance concern to escalate here** (rule 3):
+this is a one-time DOM-overlay construction on an explicit user action
+(shortcut/click/right-click), not a per-frame or per-keystroke cost —
+identical order of work to every existing `ContextMenu` open.
+
+**Checked/hint support added to `ContextMenuItem`:** two new optional
+fields, `checked` (renders a checkmark prefix) and `hint` (a muted right-
+aligned keyboard-shortcut string) — the plain-DOM analogs of Obsidian's
+`MenuItem.setChecked()` and the reference's own `menuItemTitle` helper
+(which builds a `flex` row with a `min-width` floor so the hint lines up
+as a column regardless of label length — same technique, re-implemented
+here as `.mm-context-menu-item-row`/`-label`/`-hint` in `media/
+mindmap.css`, since that CSS technique is layout-engine-agnostic, not an
+Obsidian-specific hack). Existing items with neither field render exactly
+as before (plain `textContent`) — zero visual/behavioral change to menu
+items that don't need either.
+
+**Styling — `.mm-status-badge*` CSS was never actually ported in Phase A:**
+it lived in the reference's `styles.css` (not one of the `src/` files that
+phase re-synced), so `media/mindmap.css` had zero rules for it despite
+`SvgRenderer.upsertStatusBadge` already emitting the classes. Added now,
+translated from Obsidian's `--color-red/green/blue/cyan` /
+`--text-on-accent` / `--background-primary` to this file's established
+`--vscode-*` mapping (see its header comment): done/green-flag -> the same
+`--vscode-charts-green` the branch palette's c2 slot already uses;
+started -> `--vscode-charts-blue` (c1); blocked/red-flag ->
+`--vscode-charts-red` (c0, matching the reference's own reuse of one red
+tone for both); ready -> `--vscode-terminal-ansiCyan`, the same fallback
+the branch palette's c7 slot uses since `charts.*` has no dedicated cyan.
+No new hardcoded hex value introduced, keeping this file's post-M4
+all-`--vscode-*` invariant intact.
+
+**Test-currency fallout, fixed rather than weakened (same discipline as
+Phase A's link-click-semantics fix):** the existing right-click context-
+menu test in `webviewBootstrap.test.ts` asserted the exact item-label list
+via raw `el.textContent`. Since a hint is now rendered as a nested span
+inside the same entry, `textContent` for those items became
+`"EditF2"`/`"CopyCtrl+C"`/etc. Fixed the assertion to read
+`.mm-context-menu-item-label`'s own `textContent` (falling back to the
+entry's own `textContent` for items with neither `checked` nor `hint`,
+which don't get the wrapping span) — the same "assert the new, correct
+shape" resolution as Phase A's link-click test fix, not a loosened check.
+
+**Verification:** `npm run build` clean; `npm test` — 36 files, 484 tests
+(up from 479), 0 failed, 0 skipped. New: a "Phase B: status badges"
+describe block in `webviewBootstrap.test.ts` (4 tests: shortcut toggle,
+quick-pick shortcut + checked-state + selection, context-menu badge
+section + Clear status, click-on-existing-badge) and one new case in
+`mindMapEditorProvider.test.ts` (the two routed commands reach only the
+active panel, same pattern as the existing undo/redo/search/etc. test).
+`diff -rq webview/{model,layout,render,sync,controller}` against reference
+HEAD `src/{...}`: still byte-identical (`render/SvgRenderer.ts` differs
+only by the pre-existing, unrelated M5 `getViewport`/`setViewport` pair —
+this phase added/changed 0 lines there). No changes needed to
+`webview/model/statusBadges.ts` or `SvgRenderer.ts`'s existing status-
+badge rendering — both already exposed everything this phase needed
+(`setStatusBadge`/`toggleStatusBadge`, `setStatusBadgeClickHandler`,
+`getNodeScreenRect`) since Phase A.
+
+**Cost:** zero new per-frame or per-keystroke work. The rendering itself
+(`SvgRenderer.upsertStatusBadge`) was already running every `update()` call
+since Phase A (conditional DOM-element pattern identical to the fold
+badge) — this phase only adds code paths that run on an explicit,
+infrequent user action (a shortcut press, a right-click, a badge click),
+each a one-time DOM-overlay construction of the same order of cost as the
+existing `ContextMenu`/`goToNoteSection` interactions. No dependency added.

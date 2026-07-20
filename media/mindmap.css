@@ -480,3 +480,81 @@ body {
 	margin: 4px 0;
 	background: var(--vscode-menu-separatorBackground, var(--vscode-editorWidget-border));
 }
+
+/* Phase B (status badges, reference bfd6997): a checked/hint row needs its
+   label and hint pushed to opposite ends. `min-width` (not `justify-content`
+   alone) is what actually does the pushing — see the reference's
+   `menuItemTitle` doc comment (MindMapView.ts) for why a flex child inside a
+   shrink-wrapped menu-item needs an explicit floor of its own. This menu
+   already sizes itself to its widest item ("Copy subtree as markdown"), so
+   every row ends up at a consistent width regardless. */
+.mm-context-menu-item-row {
+	display: flex;
+	align-items: center;
+	width: 100%;
+	min-width: 14em;
+}
+
+.mm-context-menu-item-label {
+	flex: 1 1 auto;
+	text-align: left;
+}
+
+.mm-context-menu-item-hint {
+	flex: 0 0 auto;
+	margin-left: 12px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.85em;
+	white-space: nowrap;
+}
+
+/* plans/09 (status badges) — small glyph+color indicator at the node
+   corner opposite the fold/cross-doc badges (see SvgRenderer.upsertStatusBadge).
+   Color is a CSS class per key, matching the .mm-status-badge-* pattern the
+   reference plugin uses, so it stays theme-aware and overridable. Ported from
+   the reference's styles.css (bfd6997), translated from Obsidian's status/
+   accent/background color variables to this repo's established --vscode-*
+   mapping (file header's port-map table): green/red/
+   blue map straight onto the same --vscode-charts-* categorical colors the
+   branch palette (c0-c5) already uses; "ready"'s cyan reuses the
+   --vscode-terminal-ansiCyan fallback the branch palette's c7 slot uses,
+   since charts.* has no dedicated cyan. */
+.mm-status-badge {
+	cursor: pointer;
+}
+
+.mm-status-badge circle {
+	stroke: var(--vscode-editor-background);
+	stroke-width: 1;
+}
+
+.mm-status-badge text {
+	fill: var(--vscode-button-foreground);
+	font-size: 9px;
+	pointer-events: none;
+	user-select: none;
+}
+
+.mm-status-badge-done circle {
+	fill: var(--vscode-charts-green);
+}
+
+.mm-status-badge-started circle {
+	fill: var(--vscode-charts-blue);
+}
+
+.mm-status-badge-blocked circle {
+	fill: var(--vscode-charts-red);
+}
+
+.mm-status-badge-red-flag circle {
+	fill: var(--vscode-charts-red);
+}
+
+.mm-status-badge-green-flag circle {
+	fill: var(--vscode-charts-green);
+}
+
+.mm-status-badge-ready circle {
+	fill: var(--vscode-terminal-ansiCyan);
+}

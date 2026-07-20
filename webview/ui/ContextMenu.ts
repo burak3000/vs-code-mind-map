@@ -3,6 +3,20 @@ export interface ContextMenuItem {
 	disabled?: boolean;
 	/** Draws a separator line above this item — used to group related actions, same visual grouping as the reference's Obsidian `Menu.addSeparator()`. */
 	separatorBefore?: boolean;
+	/**
+	 * Shows a checkmark before the label — the plain-DOM equivalent of
+	 * Obsidian's `MenuItem.setChecked()` (reference `bfd6997`), used by the
+	 * status-badge items to indicate the node's current status.
+	 */
+	checked?: boolean;
+	/**
+	 * A muted, right-aligned keyboard-shortcut hint (reference `bfd6997`'s
+	 * `menuItemTitle` — Obsidian's `Menu` only auto-shows a hotkey for a
+	 * command-backed item, so plain `onClick` items need it rendered into
+	 * the row explicitly). Purely cosmetic — the shortcut itself is wired
+	 * independently (`webview/main.ts`'s `onKeyDown`/`handleCommand`).
+	 */
+	hint?: string;
 	onClick?: () => void;
 }
 
@@ -49,7 +63,23 @@ export class ContextMenu {
 			const entry = document.createElement("div");
 			entry.className = "mm-context-menu-item";
 			if (item.disabled) entry.classList.add("mm-context-menu-item-disabled");
-			entry.textContent = item.label;
+			if (item.checked || item.hint) {
+				const row = document.createElement("span");
+				row.className = "mm-context-menu-item-row";
+				const labelEl = document.createElement("span");
+				labelEl.className = "mm-context-menu-item-label";
+				labelEl.textContent = item.checked ? `✓ ${item.label}` : item.label;
+				row.appendChild(labelEl);
+				if (item.hint) {
+					const hintEl = document.createElement("span");
+					hintEl.className = "mm-context-menu-item-hint";
+					hintEl.textContent = item.hint;
+					row.appendChild(hintEl);
+				}
+				entry.appendChild(row);
+			} else {
+				entry.textContent = item.label;
+			}
 			entry.addEventListener("click", () => {
 				if (item.disabled) return;
 				item.onClick?.();

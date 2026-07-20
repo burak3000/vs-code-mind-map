@@ -52,6 +52,7 @@ import { resolveGoToTarget, GoToTarget } from "./sync/goToSection";
 import { parseExternalPaste } from "./sync/parseExternalPaste";
 import { LinkKind, getSoleLink, buildLinkText, getImageEmbed } from "./model/links";
 import { MindNode } from "./model/types";
+import { BADGE_DEFS } from "./model/statusBadges";
 
 /** Minimal typing for the API VS Code injects into every webview. Declared here instead of adding a @types/vscode-webview devDependency for one function signature. */
 interface VsCodeWebviewApi {
@@ -81,7 +82,7 @@ interface SetDocumentMessage {
  */
 interface CommandMessage {
 	type: "command";
-	name: "undo" | "redo" | "search" | "rebalance" | "linkEditor" | "toggleFold" | "flushWrite";
+	name: "undo" | "redo" | "search" | "rebalance" | "linkEditor" | "toggleFold" | "toggleStatusDone" | "statusQuickPick" | "flushWrite";
 }
 
 /**
@@ -139,6 +140,19 @@ const IMAGE_REFRESH_DEBOUNCE_MS = 50;
 /** Escapes a string for safe interpolation into a `RegExp` — used by `resolveTargetLine` to match a block-id/heading target's exact text. */
 function escapeRegExp(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Picks the Mac vs. other-platform hotkey hint string (`model/statusBadges.ts`'s
+ * `BadgeDef.hotkey`, and the fixed `⌘`-prefixed hints `showNodeMenu` builds
+ * inline for its other items) — the webview has no `Platform.isMacOS` the
+ * way the reference's Obsidian host does, so this reads `navigator.platform`
+ * directly. Display-only: the actual keybinding is `package.json`'s
+ * `contributes.keybindings` `mac`/`key` pair, resolved by VS Code itself
+ * regardless of what this returns.
+ */
+function isMac(): boolean {
+	return /mac/i.test(navigator.platform ?? navigator.userAgent ?? "");
 }
 
 /**
@@ -338,11 +352,16 @@ class MindMapApp implements ControllerListener {
 	 * Chords VS Code intercepts before they reach the webview's own keydown
 	 * handler (plan §7, DECISIONS.md): Ctrl/Cmd+Z/Shift+Z/Y (M2),
 	 * Ctrl/Cmd+F (search), Ctrl/Cmd+Shift+B (rebalance), Ctrl/Cmd+/ (fold),
-	 * Ctrl/Cmd+K (link editor) all route here as `contributes.keybindings`
-	 * commands instead. "flushWrite" is the odd one out — not a keystroke at
-	 * all, just the host asking for the pending write before it acts on the
-	 * document (Ctrl/Cmd+M toggle); it's handled first and unconditionally
-	 * (even mid-inline-edit) so the host never hangs waiting for an ack.
+	 * Ctrl/Cmd+K (link editor), and (Phase B) Ctrl/Cmd+Shift+D (toggle
+	 * "Done") / Ctrl/Cmd+Shift+I (status quick-pick) all route here as
+	 * `contributes.keybindings` commands instead — the Shift+D/I pair risks
+	 * the same VS Code-default-keybinding collision Shift+B already had
+	 * (see DECISIONS.md's dated "Phase B" entry), so it's routed the same
+	 * conservative way rather than assumed free. "flushWrite" is the odd one
+	 * out — not a keystroke at all, just the host asking for the pending
+	 * write before it acts on the document (Ctrl/Cmd+M toggle); it's handled
+	 * first and unconditionally (even mid-inline-edit) so the host never
+	 * hangs waiting for an ack.
 	 */
 	private handleCommand(name: CommandMessage["name"]): void {
 		if (name === "flushWrite") {
@@ -359,6 +378,10 @@ class MindMapApp implements ControllerListener {
 			if (this.controller.selectedId) this.openLinkEditor(this.controller.selectedId);
 		} else if (name === "toggleFold") {
 			if (this.controller.selectedId) this.controller.toggleFold(this.controller.selectedId);
+		} else if (name === "toggleStatusDone") {
+			if (this.controller.selectedId) this.controller.toggleStatusBadge(this.controller.selectedId, "done");
+		} else if (name === "statusQuickPick") {
+			if (this.controller.selectedId) this.showStatusQuickPick(this.controller.selectedId);
 		}
 	}
 
@@ -448,6 +471,7 @@ class MindMapApp implements ControllerListener {
 		this.renderer.setNodeDblClickHandler((id) => this.controller?.requestEdit(id));
 		this.renderer.setBackgroundClickHandler(() => this.controller?.select(null));
 		this.renderer.setBadgeClickHandler((id) => this.controller?.toggleFold(id));
+		this.renderer.setStatusBadgeClickHandler((id) => this.showStatusQuickPick(id));
 		this.renderer.setNodeContextMenuHandler((id, evt) => this.showNodeMenu(id, evt));
 		this.renderer.setLinkClickHandler((kind, target) => this.openLink(kind, target));
 		this.renderer.setImageClickHandler((kind, target) => this.openImage(kind, target));
@@ -737,7 +761,10 @@ class MindMapApp implements ControllerListener {
 	 * selection, same as the keyboard shortcuts), then show the plain-DOM
 	 * `ContextMenu` with "Go to note section" plus the existing
 	 * keyboard-shortcut actions — same item set as the reference's Obsidian
-	 * `Menu`, minus icons (no icon font available/needed here).
+	 * `Menu`, minus icons (no icon font available/needed here). Items that
+	 * already had a keyboard shortcut now show it as a `hint` (Phase B,
+	 * reference `bfd6997`'s "context-menu hotkey hints"), since none of that
+	 * was previously visible anywhere in this UI.
 	 */
 	private showNodeMenu(nodeId: string, evt: MouseEvent): void {
 		if (!this.controller) return;
@@ -747,6 +774,7 @@ class MindMapApp implements ControllerListener {
 
 		const target = resolveGoToTarget(this.controller.model, node, this.serializeConfig);
 		const containerRect = this.container.getBoundingClientRect();
+		const mac = isMac();
 
 		const items: ContextMenuItem[] = [
 			{
@@ -754,13 +782,21 @@ class MindMapApp implements ControllerListener {
 				disabled: target.kind === "unavailable",
 				onClick: () => this.goToNoteSection(nodeId),
 			},
-			{ label: "Edit", separatorBefore: true, onClick: () => this.controller?.requestEdit(nodeId) },
-			{ label: "Add child", onClick: () => this.controller?.addChildToSelected() },
-			{ label: "Add sibling", onClick: () => this.controller?.addSiblingToSelected("after") },
-			{ label: "Edit link", onClick: () => this.openLinkEditor(nodeId) },
-			{ label: node.folded ? "Unfold" : "Fold", onClick: () => this.controller?.toggleFold(nodeId) },
+			{ label: "Edit", hint: "F2", separatorBefore: true, onClick: () => this.controller?.requestEdit(nodeId) },
+			{ label: "Add child", hint: "Tab", onClick: () => this.controller?.addChildToSelected() },
+			{ label: "Add sibling", hint: "Enter", onClick: () => this.controller?.addSiblingToSelected("after") },
+			{ label: "Edit link", hint: mac ? "⌘K" : "Ctrl+K", onClick: () => this.openLinkEditor(nodeId) },
+			{
+				label: node.folded ? "Unfold" : "Fold",
+				hint: mac ? "⌘/" : "Ctrl+/",
+				onClick: () => this.controller?.toggleFold(nodeId),
+			},
+		];
+		items.push(...this.buildStatusMenuItems(node, true));
+		items.push(
 			{
 				label: "Copy",
+				hint: mac ? "⌘C" : "Ctrl+C",
 				separatorBefore: true,
 				onClick: () => {
 					this.controller?.copySelected();
@@ -769,20 +805,26 @@ class MindMapApp implements ControllerListener {
 			},
 			{
 				label: "Cut",
+				hint: mac ? "⌘X" : "Ctrl+X",
 				onClick: () => {
 					this.controller?.cutSelected();
 					this.writeClipboardText();
 				},
 			},
-			{ label: "Paste", onClick: () => void this.handlePaste() },
+			{ label: "Paste", hint: mac ? "⌘V" : "Ctrl+V", onClick: () => void this.handlePaste() },
 			{
 				label: "Copy subtree as markdown",
 				onClick: () => {
 					navigator.clipboard?.writeText(serializeSubtree(node)).catch(() => {});
 				},
 			},
-			{ label: "Delete", separatorBefore: true, onClick: () => this.controller?.deleteSelected() },
-		];
+			{
+				label: "Delete",
+				hint: "Delete",
+				separatorBefore: true,
+				onClick: () => this.controller?.deleteSelected(),
+			}
+		);
 
 		this.contextMenu?.destroy();
 		this.contextMenu = new ContextMenu(this.container, {
@@ -832,6 +874,59 @@ class MindMapApp implements ControllerListener {
 			return idx >= 0 ? idx : null;
 		}
 		return null;
+	}
+
+	// --- Status badges (Phase B, plans/09 in the reference) ---
+
+	/**
+	 * Shared by `showNodeMenu`'s inline section and `showStatusQuickPick` —
+	 * the 6 canonical statuses (model/statusBadges.ts) plus "Clear status"
+	 * when one is set, each checked to show the node's current status.
+	 * `standalone` controls whether this is the *only* content of the menu
+	 * (the quick-pick — first item gets no separator) or a section spliced
+	 * into the middle of the full node menu (a separator precedes it there).
+	 */
+	private buildStatusMenuItems(node: MindNode, standalone: boolean): ContextMenuItem[] {
+		const mac = isMac();
+		const items: ContextMenuItem[] = BADGE_DEFS.map((def, index) => ({
+			label: def.label,
+			checked: node.statusBadge === def.key,
+			hint: def.hotkey ? (mac ? def.hotkey.mac : def.hotkey.other) : undefined,
+			separatorBefore: index === 0 && standalone,
+			onClick: () => this.controller?.setStatusBadge(node.id, def.key),
+		}));
+		if (node.statusBadge !== undefined) {
+			items.push({ label: "Clear status", onClick: () => this.controller?.setStatusBadge(node.id, undefined) });
+		}
+		return items;
+	}
+
+	/**
+	 * Ctrl/Cmd+Shift+I and a status-badge click: opens the same status
+	 * quick-pick as the context menu's section, positioned at the node's
+	 * current screen location (`SvgRenderer.getNodeScreenRect`, already
+	 * container-relative — matching what `ContextMenu`'s `x`/`y` expect,
+	 * same coordinate space `showNodeMenu` derives from `evt.clientX/Y` minus
+	 * the container's own offset). Reuses the plain-DOM `ContextMenu`
+	 * overlay rather than introducing a fourth UI primitive alongside
+	 * InlineEditor/SearchPanel/LinkModal/ContextMenu.
+	 */
+	private showStatusQuickPick(nodeId: string): void {
+		if (!this.controller || !this.renderer) return;
+		const node = this.controller.model.byId.get(nodeId);
+		if (!node) return;
+		const rect = this.renderer.getNodeScreenRect(nodeId);
+		if (!rect) return;
+
+		this.contextMenu?.destroy();
+		this.contextMenu = new ContextMenu(this.container, {
+			x: rect.left,
+			y: rect.top + rect.height,
+			items: this.buildStatusMenuItems(node, false),
+			onClose: () => {
+				this.contextMenu = null;
+			},
+		});
 	}
 
 	// --- Ctrl/Cmd+M toggle support (R20) ---

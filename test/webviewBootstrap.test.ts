@@ -452,13 +452,37 @@ describe("webview bootstrap (main.ts) — M3 feature wiring", () => {
 		// Right-clicking selects the node the menu belongs to.
 		expect(document.querySelectorAll(".mm-selected").length).toBe(1);
 
+		// Phase B (bfd6997): items with a keyboard shortcut now render a
+		// muted hint alongside the label (`.mm-context-menu-item-label` /
+		// `-hint`, see ContextMenu.ts) — extract just the label text so this
+		// assertion doesn't need to hardcode every hint string.
 		const items = Array.from(document.querySelectorAll(".mm-context-menu-item"));
-		expect(items.map((i) => i.textContent)).toEqual(
-			expect.arrayContaining(["Go to note section", "Edit", "Add child", "Add sibling", "Edit link", "Fold", "Copy", "Cut", "Paste", "Copy subtree as markdown", "Delete"])
+		const itemLabel = (el: Element): string =>
+			(el.querySelector(".mm-context-menu-item-label")?.textContent ?? el.textContent ?? "").replace(/^✓ /, "");
+		expect(items.map(itemLabel)).toEqual(
+			expect.arrayContaining([
+				"Go to note section",
+				"Edit",
+				"Add child",
+				"Add sibling",
+				"Edit link",
+				"Fold",
+				"Done",
+				"Started",
+				"Blocked",
+				"Red Flag",
+				"Green Flag",
+				"Ready to work on",
+				"Copy",
+				"Cut",
+				"Paste",
+				"Copy subtree as markdown",
+				"Delete",
+			])
 		);
 
 		postMessage.mockClear();
-		const goTo = items.find((i) => i.textContent === "Go to note section")!;
+		const goTo = items.find((i) => itemLabel(i) === "Go to note section")!;
 		goTo.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 
 		// The still-pending Tab edit from above is flushed synchronously
@@ -502,5 +526,124 @@ describe("webview bootstrap (main.ts) — M3 feature wiring", () => {
 		keydown("v", { ctrlKey: true });
 		await vi.waitFor(() => expect(nodeTexts().length).toBe(before + 1));
 		expect(nodeTexts().filter((t) => t === "child one").length).toBe(2); // original + pasted clone
+	});
+});
+
+// Phase B (reference bfd6997): wires the platform-free status-badge model/
+// renderer support Phase A ported dormant (DECISIONS.md's dated "Phase A"
+// entry) to actual VS Code UI — Ctrl/Cmd+Shift+D (toggle "Done"), Ctrl/Cmd+
+// Shift+I (status quick-pick, routed as commands the same conservative way
+// as every other Shift-chord here, see DECISIONS.md's dated "Phase B"
+// entry), the context menu's 6 badge items, and a click on an existing
+// badge. Same "reset to a known tree first" convention as the M3 block.
+describe("webview bootstrap (main.ts) — Phase B: status badges", () => {
+	let version = 20_000;
+
+	function resetTree(text = "# Root\n## Branch A\n- child one\n"): void {
+		sendFromHost({ type: "command", name: "flushWrite" });
+		version += 1;
+		sendFromHost({ type: "setDocument", text, version, title: "fallback" });
+	}
+
+	function nodeEls(): SVGGElement[] {
+		return Array.from(document.querySelectorAll<SVGGElement>(".mm-node"));
+	}
+
+	/** Read-only lookup — unlike `findNodeEl`/`selectNodeByText` below, this never touches the selection or double-click tracking, so it's safe to call between two commands that both depend on the current selection. */
+	function nodeEl(text: string): SVGGElement {
+		const el = nodeEls().find((n) => n.textContent?.includes(text));
+		expect(el).toBeTruthy();
+		return el!;
+	}
+
+	function findNodeEl(text: string): SVGGElement {
+		document.querySelector(".mm-svg")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); // reset double-click tracking, and (deliberately) clear selection
+		return nodeEl(text);
+	}
+
+	function selectNodeByText(text: string): SVGGElement {
+		const el = findNodeEl(text);
+		el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		return el;
+	}
+
+	function flushedWriteText(): string {
+		postMessage.mockClear();
+		sendFromHost({ type: "command", name: "flushWrite" });
+		const call = postMessage.mock.calls.find((c) => (c[0] as { type?: string }).type === "writeDocument");
+		return call ? (call[0] as { text: string }).text : "";
+	}
+
+	/** `ContextMenu.ts` only wraps the label in `.mm-context-menu-item-label` when the item also carries a `checked`/`hint` — plain items (e.g. "Clear status") fall back to the entry's own `textContent`. Strips the checkmark prefix either way. */
+	function itemLabel(el: Element): string {
+		return (el.querySelector(".mm-context-menu-item-label")?.textContent ?? el.textContent ?? "").replace(/^✓ /, "");
+	}
+
+	it("Ctrl/Cmd+Shift+D (routed as a 'toggleStatusDone' command) toggles the 'Done' badge on the selected node, persisted as 'badge:' metadata", () => {
+		resetTree();
+		selectNodeByText("child one");
+
+		sendFromHost({ type: "command", name: "toggleStatusDone" });
+		expect(nodeEl("child one").querySelector(".mm-status-badge-done")).not.toBeNull();
+		expect(flushedWriteText()).toContain("badge: done");
+
+		sendFromHost({ type: "command", name: "toggleStatusDone" });
+		expect(nodeEl("child one").querySelector(".mm-status-badge-done")).toBeNull();
+	});
+
+	it("Ctrl/Cmd+Shift+I (routed as a 'statusQuickPick' command) opens a quick-pick of all 6 statuses at the selected node, checked against its current status", () => {
+		resetTree();
+		selectNodeByText("child one");
+		sendFromHost({ type: "command", name: "toggleStatusDone" }); // give it a current status to check against
+
+		sendFromHost({ type: "command", name: "statusQuickPick" });
+		expect(document.querySelector(".mm-context-menu")).not.toBeNull();
+
+		const items = Array.from(document.querySelectorAll(".mm-context-menu-item"));
+		expect(items.map(itemLabel)).toEqual(
+			expect.arrayContaining(["Done", "Started", "Blocked", "Red Flag", "Green Flag", "Ready to work on", "Clear status"])
+		);
+		// "Done" is the node's current status — it alone shows the checkmark.
+		const doneItem = items.find((i) => itemLabel(i) === "Done")!;
+		expect(doneItem.textContent).toContain("✓");
+
+		const started = items.find((i) => itemLabel(i) === "Started")!;
+		started.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		expect(document.querySelector(".mm-context-menu")).toBeNull(); // closed after the click
+		expect(nodeEl("child one").querySelector(".mm-status-badge-started")).not.toBeNull();
+		expect(nodeEl("child one").querySelector(".mm-status-badge-done")).toBeNull();
+	});
+
+	it("the context menu's status section sets a badge, and shows 'Clear status' only once one is set", () => {
+		resetTree();
+		const nodeG = findNodeEl("child one");
+		nodeG.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 10 }));
+
+		let items = Array.from(document.querySelectorAll(".mm-context-menu-item"));
+		expect(items.some((i) => itemLabel(i) === "Clear status")).toBe(false);
+
+		const blocked = items.find((i) => itemLabel(i) === "Blocked")!;
+		blocked.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		expect(nodeEl("child one").querySelector(".mm-status-badge-blocked")).not.toBeNull();
+
+		findNodeEl("child one").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 10 }));
+		items = Array.from(document.querySelectorAll(".mm-context-menu-item"));
+		expect(items.some((i) => itemLabel(i) === "Clear status")).toBe(true);
+
+		const clear = items.find((i) => itemLabel(i) === "Clear status")!;
+		clear.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		expect(nodeEl("child one").querySelector(".mm-status-badge-blocked")).toBeNull();
+	});
+
+	it("clicking an existing status badge opens the quick-pick positioned at the node, not the mouse-click position", () => {
+		resetTree();
+		selectNodeByText("child one");
+		sendFromHost({ type: "command", name: "toggleStatusDone" });
+
+		const badge = nodeEl("child one").querySelector(".mm-status-badge")!;
+		badge.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		expect(document.querySelector(".mm-context-menu")).not.toBeNull();
+		// 6 statuses + "Clear status" (a status is already set on this node).
+		expect(document.querySelectorAll(".mm-context-menu-item").length).toBeGreaterThanOrEqual(7);
 	});
 });

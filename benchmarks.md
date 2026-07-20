@@ -810,3 +810,65 @@ render-only) beyond re-confirming the existing checklist above still holds
 same headless suite. Phase B (status badges wiring) and Phase C (relations
 wiring) will each add their own real-window checklist once there's
 something interactive to click.
+
+## Phase B — status badges wired to VS Code UI (keyboard shortcuts, context menu, quick-pick, click handler)
+
+No new per-edit or per-frame cost. `SvgRenderer.upsertStatusBadge` has run
+on every `update()` call since Phase A landed (same conditional-DOM-
+element pattern as the fold badge — it just never actually built a badge
+element because nothing set `node.statusBadge`); this phase only adds code
+paths behind explicit, infrequent user actions:
+
+- A keyboard shortcut press (Ctrl/Cmd+Shift+D/I) — routed through
+  `contributes.keybindings` + a `command` message, identical cost shape to
+  the five other chords already routed this way (Ctrl/Cmd+Z/F/K/Shift+B/`/`).
+- A right-click — the context menu's item list grew by 6 badge items (+1
+  "Clear status" when applicable); building a few more plain `<div>`s in an
+  already-one-time DOM-overlay construction is not a measurable cost.
+- A status-badge click, or the quick-pick it opens — same `ContextMenu`
+  overlay construction the right-click menu already does, just positioned
+  via the existing (M5-additive) `SvgRenderer.getNodeScreenRect` instead of
+  the mouse event.
+
+No dependency added. `diff -rq webview/{model,layout,render,sync,
+controller}` against reference HEAD re-confirmed byte-identical
+(`SvgRenderer.ts`'s divergence is still exactly the pre-existing M5
+`getViewport`/`setViewport` pair — 0 lines touched by this phase).
+
+### Test suite
+
+**484 passed / 0 skipped** (36 files, up from 479) — new: a "Phase B:
+status badges" describe block in `webviewBootstrap.test.ts` (keyboard
+shortcut -> badge toggle + persisted `badge:` metadata; quick-pick open +
+checked-state + item click; context-menu badge section + conditional
+"Clear status"; click-on-existing-badge -> quick-pick, positioned at the
+node not the mouse) and one new case in `mindMapEditorProvider.test.ts`
+(the two newly-routed commands reach only the active panel). One
+pre-existing context-menu test's item-label assertion adjusted for the new
+hint-text DOM shape (see DECISIONS.md) — not weakened, made shape-aware.
+
+### REMAINING FOR HUMAN — Phase B (add to the consolidated real-window checklist)
+
+Everything above is jsdom — no real pixels, no real Extension Development
+Host keybinding interception, no real Chromium hit-testing. Before this
+phase is considered done in practice, in a real F5 window:
+
+- **Ctrl/Cmd+Shift+D actually reaches the mind map**, not VS Code's own
+  "Show Run and Debug" view — this is the one thing no headless test here
+  can prove; if it does collide in a real window, rebind the same way
+  Ctrl/Cmd+K -> a different chord was kept open as a fallback path
+  elsewhere in this project's history.
+- **Ctrl/Cmd+Shift+I actually reaches the mind map**, not a "Toggle
+  Developer Tools" binding some VS Code builds have carried on this chord.
+- Open the quick-pick (shortcut and via clicking an existing badge) and
+  confirm it visually appears anchored to the node, not the last mouse
+  position, and that its checkmark tracks the node's actual current status.
+- Right-click a node, confirm the 6 status items plus (once one is set)
+  "Clear status" render with legible checkmarks/hints against at least one
+  light and one dark theme (the badge circle fill/text-color pair is new
+  CSS, not yet real-window-verified against a live theme the way M4's
+  branch palette was).
+- Set a few different statuses across several nodes, save, close and
+  reopen the map — confirm each badge's glyph/color persists (the model-
+  level round trip is covered by `statusBadgePersistence.test.ts`, but that
+  test doesn't paint pixels).

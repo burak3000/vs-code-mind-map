@@ -18,6 +18,9 @@ import * as path from "path";
 /** A link/image click target's kind — mirrors `webview/model/links.ts`'s `LinkKind` (not imported directly: that module lives under `webview/`, compiled against the browser-lib tsconfig, and this file is the Node-side host — see DECISIONS.md's two-tsconfig entry). */
 type LinkKind = "wikilink" | "mdlink";
 
+/** Every chord routed as a "command" message rather than reaching the webview's own keydown handler directly (see `registerRoutedCommand`'s doc comment) — mirrors `webview/main.ts`'s `CommandMessage["name"]` minus "flushWrite" (that one is host-initiated, not chord-routed, so it's never a target of `postCommandToActivePanel`). */
+type RoutedCommandName = "undo" | "redo" | "search" | "rebalance" | "linkEditor" | "toggleFold" | "toggleStatusDone" | "statusQuickPick";
+
 /** A scheme-qualified URL (`https://…`, `mailto:…`, etc.) — anything else is treated as a workspace-relative path, same split the reference `MindMapView.openLink` makes. */
 const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
 
@@ -119,7 +122,7 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 		// letting the keystroke reach the webview's own keydown handler.
 		// Each just forwards a "command" message to whichever registered
 		// panel is currently active.
-		const registerRoutedCommand = (id: string, name: "undo" | "redo" | "search" | "rebalance" | "linkEditor" | "toggleFold") =>
+		const registerRoutedCommand = (id: string, name: RoutedCommandName) =>
 			vscode.commands.registerCommand(id, () => MindMapEditorProvider.postCommandToActivePanel(name));
 
 		const undoCommand = registerRoutedCommand("mindmapView.undo", "undo");
@@ -128,6 +131,14 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 		const rebalanceCommand = registerRoutedCommand("mindmapView.rebalance", "rebalance");
 		const linkEditorCommand = registerRoutedCommand("mindmapView.linkEditor", "linkEditor");
 		const toggleFoldCommand = registerRoutedCommand("mindmapView.toggleFold", "toggleFold");
+		// Phase B (status badges): Ctrl/Cmd+Shift+D/I risk the same
+		// VS Code-default-keybinding collision Ctrl/Cmd+Shift+B (rebalance)
+		// already had (Shift+D is VS Code's own "Show Run and Debug" view;
+		// Shift+I has historically been "Toggle Developer Tools" in some
+		// versions) — routed the same conservative way as every other
+		// intercepted chord above rather than assuming either is free.
+		const toggleStatusDoneCommand = registerRoutedCommand("mindmapView.toggleStatusDone", "toggleStatusDone");
+		const statusQuickPickCommand = registerRoutedCommand("mindmapView.statusQuickPick", "statusQuickPick");
 
 		// Ctrl/Cmd+M toggle (R20): two commands, two keybindings with
 		// complementary `when` clauses (package.json) — one fires while a
@@ -156,12 +167,14 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 			rebalanceCommand,
 			linkEditorCommand,
 			toggleFoldCommand,
+			toggleStatusDoneCommand,
+			statusQuickPickCommand,
 			toggleToTextCommand,
 			toggleToMindMapCommand
 		);
 	}
 
-	private static postCommandToActivePanel(name: "undo" | "redo" | "search" | "rebalance" | "linkEditor" | "toggleFold"): void {
+	private static postCommandToActivePanel(name: RoutedCommandName): void {
 		for (const entry of MindMapEditorProvider.panels) {
 			if (entry.panel.active) void entry.panel.webview.postMessage({ type: "command", name });
 		}

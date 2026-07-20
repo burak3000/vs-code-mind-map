@@ -427,6 +427,59 @@ M0 port point at `0a66f7c`). Full reasoning in DECISIONS.md's dated
   point it's flagged for re-measurement, not silently assumed fine.
 - Not committed — left for the user, same as every phase so far.
 
+## Phase B — done (post-M5 catch-up: status badges VS Code wiring)
+
+Wired the platform-free status-badge model/renderer support Phase A ported
+dormant (no UI set or clicked a badge) to actual VS Code UI — reference
+commit `bfd6997`. Full reasoning in DECISIONS.md's dated "Phase B" entry;
+summary:
+
+- **Keyboard shortcuts:** Ctrl/Cmd+Shift+D (toggle "Done" directly) and
+  Ctrl/Cmd+Shift+I (open the status quick-pick) both routed through
+  `contributes.keybindings` + a `command` message (`toggleStatusDone`/
+  `statusQuickPick`), the same conservative pattern as every other chord
+  VS Code might intercept (Ctrl/Cmd+Z/F/K/Shift+B/`/`) — Shift+D collides
+  with VS Code's own "Show Run and Debug" default binding, so this wasn't
+  assumed safe as a plain webview keydown. `src/MindMapEditorProvider.ts`
+  registers and routes both commands to the active panel, identically to
+  `undo`/`redo`/`search`/`rebalance`/`linkEditor`/`toggleFold`.
+- **Context menu:** the 6 canonical badges (plus "Clear status" once one is
+  set) spliced into `webview/main.ts`'s existing flat item list, each
+  checked against the node's current status. Every item that already had a
+  keyboard shortcut (Edit, Add child/sibling, Edit link, Fold, Copy/Cut/
+  Paste, Delete) now shows it as a muted right-aligned hint — reference
+  `bfd6997`'s "context-menu hotkey hints," previously invisible anywhere in
+  this UI. `webview/ui/ContextMenu.ts` gained two new optional
+  `ContextMenuItem` fields (`checked`, `hint`) to support this — the plain-
+  DOM analog of Obsidian's `MenuItem.setChecked()`/`menuItemTitle`.
+- **Quick-pick + badge click:** both reuse the same plain-DOM `ContextMenu`
+  overlay (positioned at the node's screen rect via the already-additive
+  `SvgRenderer.getNodeScreenRect`, not the mouse) rather than a fourth UI
+  primitive alongside InlineEditor/SearchPanel/LinkModal/ContextMenu.
+  `SvgRenderer.setStatusBadgeClickHandler` (already exposed since Phase A,
+  dormant) now opens it.
+- **Styling:** `.mm-status-badge*` CSS — never actually ported in Phase A
+  (it lived in the reference's `styles.css`, not a re-synced `src/` file)
+  — added to `media/mindmap.css`, translated from Obsidian's variables to
+  this repo's established `--vscode-*` mapping (green/red/blue -> the same
+  `--vscode-charts-*` colors the branch palette already uses; "ready"'s
+  cyan reuses the branch palette's `--vscode-terminal-ansiCyan` fallback).
+- **No core files touched:** `webview/{model,layout,render,sync,
+  controller}` re-confirmed byte-identical to reference HEAD (`SvgRenderer.ts`
+  still differs only by the pre-existing, unrelated M5
+  `getViewport`/`setViewport` pair — 0 lines changed by this phase).
+- **Tests:** 484 passed / 0 skipped (36 files, up from 479) — new "Phase B:
+  status badges" describe block in `webviewBootstrap.test.ts` (shortcut ->
+  badge set, quick-pick open/checked/select, context-menu item -> badge
+  set, click-on-existing-badge -> quick-pick) plus a new
+  `mindMapEditorProvider.test.ts` case for the two routed commands. One
+  pre-existing test's exact-item-list assertion loosened from raw
+  `textContent` to a `.mm-context-menu-item-label`-aware helper (the hint
+  text is now part of `textContent`) — same "fix the test to the new,
+  correct shape" discipline as Phase A's link-click-semantics fix, not a
+  weakened assertion.
+- Not committed — left for the user, same as every phase so far.
+
 ## Decisions taken so far
 
 | Decision | Outcome | Where |
