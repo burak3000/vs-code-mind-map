@@ -401,6 +401,39 @@ describe("webview bootstrap (main.ts) — M3 feature wiring", () => {
 		expect(postMessage).toHaveBeenCalledWith({ type: "openLink", kind: "wikilink", target: "Some Note" });
 	});
 
+	it("Ctrl/Cmd+click on a same-file wikilink (a same-doc relation, e.g. [[#^id]]) focuses the target node in the map instead of asking the host to open it as a file (ToolNotes.md ^3xv1d0)", () => {
+		// Before the fix, this posted {type:"openLink", kind:"wikilink",
+		// target:"#^abc123"} to the host, which tried to open a file
+		// literally named "#^abc123.md" and failed ("the editor could not
+		// be opened because the file was not found") — the target isn't a
+		// different file at all, it's a block reference within this same
+		// document, which Obsidian's own link-opening API resolves for
+		// free but VS Code's vscode.open does not.
+		resetTree("# Root\n## Branch A\n- child one ^abc123\n- [[#^abc123|relation]]\n");
+
+		postMessage.mockClear();
+		const link = document.querySelector<SVGElement>(".mm-node-link")!;
+		expect(link.dataset.linkKind).toBe("wikilink");
+		expect(link.dataset.linkTarget).toBe("#^abc123");
+
+		link.dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true, metaKey: true }));
+
+		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "openLink" }));
+		const selected = document.querySelectorAll(".mm-selected");
+		expect(selected.length).toBe(1);
+		expect(selected[0].textContent).toContain("child one");
+	});
+
+	it("Ctrl/Cmd+click on a same-file wikilink with no resolvable target (dangling ^id or a bare heading link) no-ops instead of trying to open a broken file", () => {
+		resetTree("# Root\n## Branch A\n- [[#^nosuchid|relation]]\n");
+
+		postMessage.mockClear();
+		const link = document.querySelector<SVGElement>(".mm-node-link")!;
+		link.dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true, metaKey: true }));
+
+		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "openLink" }));
+	});
+
 	it("Ctrl/Cmd+K (routed as a 'linkEditor' command) opens the links & relations modal for the selected node; adding a Link commits link syntax immediately (modal stays open — D7)", () => {
 		resetTree();
 		selectNodeByText("child two");

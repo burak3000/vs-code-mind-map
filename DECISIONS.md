@@ -2035,3 +2035,82 @@ confirmed rather than assumed.
 
 **Cost:** none — this phase is docs, a packaging-config fix, and
 verification; zero runtime code changed.
+
+---
+
+## 2026-07-21 — Bug fix: clicking a same-file wikilink (a same-doc relation) tried to open a nonexistent file
+
+**Context:** user-reported (`ToolNotes.md` ^3xv1d0, with a screenshot):
+Ctrl/Cmd+clicking a node's link text — specifically `[[#^3xv1d0|relation]]`,
+exactly the shape a same-doc relation (Phase A/C) produces — opened a new
+tab titled `#^3xv1d0.md` and immediately failed: "The editor could not be
+opened because the file was not found."
+
+**Root cause:** `webview/main.ts`'s `openLink` unconditionally forwarded
+every wikilink to the host as `{type:"openLink", kind:"wikilink", target}`;
+`MindMapEditorProvider.openLink` treats any non-URL, non-absolute-path
+wikilink target as a *different* note's basename and appends `.md` before
+resolving it relative to the document's folder. A same-file target — an
+empty file part (`[[#^id]]`) or one matching the current document's own
+basename — isn't a different note at all; there is no file named
+`#^id.md`, so this always failed for exactly this link shape.
+
+This gap exists because the reference Obsidian plugin's equivalent
+`openLink` never needed to special-case it: `app.workspace.openLinkText`
+resolves a same-file target internally, for free. `vscode.open` (this
+port's replacement for that call, host-side) has no equivalent same-file
+resolution — the case was simply never wired when `openLink` was ported.
+
+**Decision:** resolve same-file wikilinks **in the webview**, before ever
+reaching the host, since only the webview has the live model needed to
+look a block id up:
+- `isSameFileWikilinkTarget(target)`: true when the wikilink's file part
+  (text before `#`, or the whole target if there's no `#`) is empty or
+  case-insensitively matches `this.title` — a hand-kept mirror of
+  `model/relations.ts`'s private `isSameFileTarget` (protected core, not
+  exported/importable; same duplication-over-touching-core precedent as
+  `MindMapEditorProvider.ts`'s own `isUrlTarget`/`isAbsoluteFilesystemPath`
+  copies).
+- `resolveSameFileWikilinkNode(target)`: for a same-file target with a
+  `^blockid` fragment, looks it up in `this.controller.model.byId` —
+  mirrors `relations.ts`'s `classifyLink`'s same-doc branch.
+- `openLink`: if the target resolves to a node, calls `focusNode(id)` (the
+  same select-and-center behavior the search panel already uses for "jump
+  to a node") instead of posting to the host at all — no new tab, no
+  round trip, and arguably more useful than opening a second view of the
+  same file. If the target is same-file but unresolvable (a dangling
+  `^id`, or a bare heading-text link with no caret — the same "(c) neither"
+  case `classifyLink` already treats as "not a relation, ignore"), it's a
+  silent no-op rather than a doomed host round trip. Only a genuinely
+  different-file wikilink (or any mdlink/URL, unaffected by this fix)
+  still posts to the host.
+
+**Alternatives considered:**
+- Fixing it host-side (in `MindMapEditorProvider.openLink`) by special-
+  casing an empty/self file part and opening the *current* document
+  instead — rejected: the host doesn't have the model, so it can't resolve
+  `^blockid` to anything more useful than "open the same file with no
+  scroll position," which is strictly worse than the webview-side fix
+  (which can select and center the exact node) and still round-trips for
+  no benefit.
+- Exporting `isSameFileTarget`/`classifyLink` from `model/relations.ts` so
+  `openLink` could import them directly instead of a hand-kept mirror —
+  rejected: that file is byte-identical protected core; adding an export
+  is a second, unauthorized divergence from the reference for a two-line
+  helper that's simpler to duplicate than to get permission to touch core
+  for. Flagging the duplication here (not silently maintaining two copies
+  without a pointer) so a future core re-sync that changes
+  `isSameFileTarget`'s rule is a deliberate "update the mirror too" step,
+  not a silent drift.
+
+**Verification:** two new tests in `test/webviewBootstrap.test.ts` — a
+resolvable `[[#^id]]` click focuses (selects + is implied to center) the
+target node and never posts `openLink`; an unresolvable one (`^nosuchid`)
+also never posts `openLink` (silent no-op, not a broken open). 494 tests
+pass (up from 492); `webview/{model,layout,render,sync,controller}`
+unchanged and still byte-identical to reference HEAD — this fix lives
+entirely in `webview/main.ts`.
+
+**Cost:** none — this only runs on an explicit Ctrl/Cmd+click, and does
+strictly less work than before (no host message, no `vscode.open` file
+resolution attempt) for the case it fixes.

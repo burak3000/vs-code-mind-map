@@ -839,7 +839,45 @@ class MindMapApp implements ControllerListener {
 	 * be replaced by it, so there is no equivalent distinction to make here.
 	 */
 	private openLink(kind: LinkKind, target: string): void {
+		// Bug fix (ToolNotes.md ^3xv1d0): a same-file wikilink — `[[#^id]]`
+		// or `[[<this file's own basename>#^id]]`, exactly what a same-doc
+		// relation (model/relations.ts) is made of — has an empty/self file
+		// part, so there is nothing for the host to open; it isn't a
+		// different document at all. Forwarding it to the host anyway (the
+		// pre-fix behavior) made it try to open a file literally named
+		// "#^id.md", which never exists — "the editor could not be opened
+		// because the file was not found." Obsidian's own `openLinkText`
+		// resolves this same-file case internally for free; VS Code's
+		// `vscode.open` does not, so it has to be handled here instead.
+		// Resolving locally and just focusing the node in the already-open
+		// map (mirroring the search panel's `focusNode`) is also the more
+		// useful behavior for a same-doc relation click, vs. round-tripping
+		// to the host to open a second view of the same file.
+		if (kind === "wikilink" && this.controller) {
+			const targetNode = this.resolveSameFileWikilinkNode(target);
+			if (targetNode) {
+				this.focusNode(targetNode.id);
+				return;
+			}
+			if (this.isSameFileWikilinkTarget(target)) return; // same-file but unresolvable (bare heading link, dangling ^id, self-link) — no-op, not a broken file-open
+		}
 		this.vscode.postMessage({ type: "openLink", kind, target });
+	}
+
+	/** True if a wikilink `target`'s file part (the text before "#", or the whole target when there's no "#") refers to *this* document — either empty (bare `[[#...]]`) or a case-insensitive match on `this.title`. Mirrors `model/relations.ts`'s private `isSameFileTarget` (protected core, not importable) — kept in sync with it by hand; see that file's doc comment for the exact same-file rule this reimplements. */
+	private isSameFileWikilinkTarget(target: string): boolean {
+		const hashIdx = target.indexOf("#");
+		const filePart = hashIdx === -1 ? target : target.slice(0, hashIdx);
+		return filePart === "" || filePart.toLowerCase() === this.title.toLowerCase();
+	}
+
+	/** Resolves a same-file wikilink's `^blockid` fragment to the node it references in the *current* model, or `null` if `target` isn't a same-file link, has no `^id` fragment, or the id isn't found (dangling reference). Mirrors `model/relations.ts`'s `classifyLink`'s same-doc branch (protected core) for this one purpose — reused by `openLink`, not duplicated logic drifting from relation-arrow resolution. */
+	private resolveSameFileWikilinkNode(target: string): MindNode | null {
+		if (!this.controller || !this.isSameFileWikilinkTarget(target)) return null;
+		const hashIdx = target.indexOf("#");
+		const fragment = hashIdx === -1 ? "" : target.slice(hashIdx + 1);
+		if (!fragment.startsWith("^")) return null;
+		return this.controller.model.byId.get(fragment.slice(1)) ?? null;
 	}
 
 	private openImage(kind: LinkKind, target: string): void {
