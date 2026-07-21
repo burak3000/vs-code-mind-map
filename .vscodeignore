@@ -24,15 +24,19 @@ tsconfig.webview.json
 package-lock.json
 esbuild.config.mjs
 
-# Design/process docs and agent-facing project instructions kept in the repo
-# but not useful (CLAUDE.md: not appropriate) inside the packaged extension —
-# README.md/CHANGELOG.md/LICENSE ship, nothing else here does.
-CLAUDE.md
-vscode-mindmap-extension-plan.md
-DECISIONS.md
-PROGRESS.md
-benchmarks.md
-RELEASING.md
+# Design/process docs, agent-facing project instructions, and any scratch
+# note a human drops in the repo root while manually testing (e.g.
+# ToolNotes.md, MindMapBaba.md) — a blanket root-level *.md exclude with an
+# explicit allowlist, not a per-filename list: the previous version named
+# specific files (CLAUDE.md, DECISIONS.md, ..., MindMapBaba.md) one at a
+# time, which is exactly the kind of list that silently misses the *next*
+# stray note (this is how ToolNotes.md leaked into a .vsix before this
+# fix — see DECISIONS.md's dated entry). Only README.md/CHANGELOG.md ship;
+# everything else at the root, present today or added later, is excluded
+# by default instead of by name.
+*.md
+!README.md
+!CHANGELOG.md
 
 .gitignore
 .vscodeignore
@@ -40,8 +44,8 @@ RELEASING.md
 **/.DS_Store
 *.map
 
-# Stray untracked scratch files left in the repo root from manual F5
-# testing (e.g. clipboard-image-paste verification) — never part of the
-# shipped extension.
-MindMapBaba.md
+# Stray untracked scratch images left in the repo root from manual F5
+# testing (clipboard-image-paste verification) — matches this extension's
+# own generated filename pattern (MindMapEditorProvider.ts's writeImage),
+# so it also covers every future one, not just today's.
 pasted-image-*.png

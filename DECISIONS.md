@@ -2114,3 +2114,43 @@ entirely in `webview/main.ts`.
 **Cost:** none — this only runs on an explicit Ctrl/Cmd+click, and does
 strictly less work than before (no host message, no `vscode.open` file
 resolution attempt) for the case it fixes.
+
+---
+
+## 2026-07-21 — Packaging fix: `.vscodeignore`'s doc/scratch-note exclusion switched from a filename list to a blanket rule
+
+**Context:** re-packaging after the fix above, `ToolNotes.md` (a new
+scratch notes file the user created in the repo root — the same source as
+the bug report itself) showed up inside the built `.vsix`. `.vscodeignore`
+excluded design docs and prior scratch files (`MindMapBaba.md`,
+`pasted-image-*.png`) **by exact name**, added one at a time as each was
+noticed (M5, then Phase D). That approach's flaw is structural, not a
+one-off miss: any *new* root-level `.md` a human drops while testing (this
+one, the next one) isn't covered until someone notices it leaked and adds
+its specific name — the same class of gap, recurring.
+
+**Decision:** replaced the per-filename doc exclusions (`CLAUDE.md`,
+`vscode-mindmap-extension-plan.md`, `DECISIONS.md`, `PROGRESS.md`,
+`benchmarks.md`, `RELEASING.md`, `MindMapBaba.md`) with a blanket
+`*.md` exclude plus an explicit two-line allowlist (`!README.md`,
+`!CHANGELOG.md`) — `.vscodeignore` follows `.gitignore` syntax, including
+`!` negation. Every root-level `.md` file, present today or created later
+for any reason, is excluded by default; only the two that are meant to
+ship are named. `pasted-image-*.png` is left as a name/glob pattern (not
+generalized further) since it already matches this extension's own
+generated filename format (`MindMapEditorProvider.ts`'s `writeImage`)
+exactly, so it already covers every future paste-test artifact, not just
+past ones — no structural gap there to fix.
+
+**Alternatives considered:** just adding `ToolNotes.md` to the list —
+rejected as treating the symptom; would need repeating for the next stray
+note file, exactly the failure this decision closes off.
+
+**Verification:** `npm run package` re-run — the `.vsix`'s file listing no
+longer includes `ToolNotes.md` (or any other project `.md` besides
+`readme.md`/`changelog.md`), confirmed by inspecting `vsce`'s own printed
+file tree. `mindmap-view-0.0.1.vsix`: 48.45 KB (~9.7% of the 500 KB
+target) — smaller than the erroneous build, not larger, since one file
+was removed.
+
+**Cost:** none — packaging-config only, no runtime code touched.
