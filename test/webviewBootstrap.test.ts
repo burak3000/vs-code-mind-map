@@ -250,6 +250,15 @@ describe("webview bootstrap (main.ts) — M3 feature wiring", () => {
 		container().dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...opts }));
 	}
 
+	function viewportTransform(): string {
+		return document.querySelector(".mm-viewport")!.getAttribute("transform") ?? "";
+	}
+
+	/** `scheduleApplyViewport` (SvgRenderer) rAF-batches the pan/zoom transform write — a real animation-frame tick, not just a microtask, so a centering assertion needs to await one before reading `.mm-viewport`'s `transform` attribute. */
+	async function nextFrame(): Promise<void> {
+		await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+	}
+
 	function nodeEls(): SVGGElement[] {
 		return Array.from(document.querySelectorAll<SVGGElement>(".mm-node"));
 	}
@@ -634,6 +643,52 @@ describe("webview bootstrap (main.ts) — M3 feature wiring", () => {
 		sendFromHost({ type: "focusAtLine", line: 999 });
 		selected = document.querySelectorAll(".mm-selected");
 		expect(selected[0].textContent).toContain("child three");
+	});
+
+	it("the context menu's 'Center' item pans the view to the clicked node without changing selection/fold state", async () => {
+		resetTree();
+		const nodeG = findNodeEl("child three");
+
+		nodeG.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 10 }));
+		const items = Array.from(document.querySelectorAll(".mm-context-menu-item"));
+		const itemLabel = (el: Element): string => el.querySelector(".mm-context-menu-item-label")?.textContent ?? el.textContent ?? "";
+		expect(items.map(itemLabel)).toEqual(expect.arrayContaining(["Center"]));
+		const centerItem = items.find((i) => itemLabel(i) === "Center")!;
+		expect(centerItem.querySelector(".mm-context-menu-item-hint")?.textContent).toBe("Home");
+
+		centerItem.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		await nextFrame();
+
+		expect(document.querySelector(".mm-context-menu")).toBeNull(); // closed after the click
+		const selected = document.querySelectorAll(".mm-selected");
+		expect(selected.length).toBe(1);
+		expect(selected[0].textContent).toContain("child three"); // right-clicking already selected it; Center doesn't change that
+	});
+
+	it("plain Home (no modifier) centers the currently selected node; Ctrl/Cmd+Home still centers the root", async () => {
+		resetTree();
+		selectNodeByText("child three");
+
+		// Establish a known, deterministic starting viewport (independent of
+		// whatever an earlier test in this shared-state file left behind) —
+		// reset to root first, which plain Home's target ("child three",
+		// away from the root) must then visibly move away from.
+		keydown("Home", { ctrlKey: true });
+		await nextFrame();
+		const rootBaseline = viewportTransform();
+
+		keydown("Home");
+		await nextFrame();
+		const centeredOnChild = viewportTransform();
+		expect(centeredOnChild).not.toBe(rootBaseline); // plain Home actually panned to the (off-root) selected node
+
+		keydown("Home", { ctrlKey: true });
+		await nextFrame();
+		const centeredOnRoot = viewportTransform();
+
+		expect(centeredOnRoot).toBe(rootBaseline); // Ctrl/Cmd+Home always lands back on the same fixed root reset
+		expect(centeredOnRoot).not.toBe(centeredOnChild); // different targets ("child three" vs. the root) -> different transforms
+		expect(centeredOnRoot).toMatch(/scale\(1\)$/); // centerOnRoot always resets to scale 1, unlike centerOnWorldPoint (plain Home) which keeps the current zoom
 	});
 
 	it("Escape / an outside click closes the context menu without acting", () => {

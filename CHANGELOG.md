@@ -12,6 +12,10 @@ afterward; there has been no public release yet (`version` in
   Right-click anywhere in a markdown file's plain text editor for a context
   menu item that opens (or reveals) that file's mind map and selects the
   node nearest your cursor.
+- **New:** "Center" — a context-menu item (hint: `Home`) and a plain
+  `Home` keyboard shortcut that re-centers the view on the currently
+  selected node, keeping the current zoom level. `Ctrl/Cmd+Home` still
+  centers on the root.
 - **Fix:** clicking a same-document relation link (e.g. `[[#^blockid]]`)
   tried to open a file literally named `#^blockid.md` and failed. It now
   focuses the target node in the already-open map instead.

@@ -76,6 +76,7 @@ items become nested list items.
 | `Ctrl/Cmd+Shift+D` | Toggle the selected node's "Done" status |
 | `Ctrl/Cmd+Shift+I` | Open a quick-pick to set (or clear) the selected node's status |
 | `Ctrl/Cmd+C` / `X` / `V` | Copy / cut / paste (single or multi-selection; also accepts pasted external markdown/plain text, or a pasted clipboard image) |
+| `Home` | Center the view on the selected node (also a "Center" context-menu item) |
 | `Ctrl/Cmd+Home` | Center the view on the root |
 | `Ctrl/Cmd+M` | Toggle this tab between the mind map and the plain markdown editor |
 | Mouse wheel | Zoom |

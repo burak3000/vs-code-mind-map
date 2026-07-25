@@ -2238,3 +2238,54 @@ re-confirmed untouched).
 menu action; the line-to-node walk is O(n) over the tree once, the same
 order of work `findNodeLine`'s own forward direction already does for
 "Go to note section."
+
+---
+
+## 2026-07-21 — Feature: "Center" (context-menu item + plain `Home` shortcut)
+
+**Context:** user request — no equivalent existed. `Ctrl/Cmd+Home` already
+centers on the *root* (`SvgRenderer.centerOnRoot`, resets zoom to 1); there
+was no way to re-center the view on whatever node is currently *selected*
+after panning/zooming away from it, short of deselecting and re-selecting
+(which `focusNode` — used by search results and the same-file-wikilink fix
+above — also unfolds ancestors for, since it's built for "reveal a possibly
+hidden/off-screen node," not "re-center a node I can already see").
+
+**Decision:** a new `centerNode(nodeId)` in `webview/main.ts` that calls
+the already-additive-from-core `SvgRenderer.centerOnWorldPoint` (keeps the
+current zoom, unlike `centerOnRoot`) — no core change needed, this is pure
+platform-layer wiring reusing an existing ported method. Exposed two ways:
+- **Context-menu item** "Center" (hint: `Home`), added right after "Go to
+  note section" in `showNodeMenu`'s item list — both are "jump/pan to a
+  location" actions, grouped together ahead of the `Edit`/action group.
+- **Plain (unmodified) `Home`** in `onKeyDown`, centering
+  `this.controller.selectedId` — chosen as the mnemonic complement to the
+  already-existing `Ctrl/Cmd+Home` (root): "Home" for "my" current
+  position, "Ctrl/Cmd+Home" for the document's true home. Like
+  `Ctrl/Cmd+Home` itself, this isn't on VS Code's intercepted-chord list
+  (a bare `Home` inside a focused, non-input `div` reaches the webview's
+  own `keydown` handler directly, same reasoning already established for
+  Tab/Enter/Arrows/Ctrl+Home), so no `contributes.keybindings` entry is
+  needed.
+
+**Alternatives considered:** reusing `focusNode` instead of adding
+`centerNode` — rejected: `focusNode` also calls `revealAndSelect` (unfolds
+ancestors + reselects), which is redundant work for a node that's already
+selected and visible; `centerNode` is the minimal "just pan" primitive the
+task actually needs, and `focusNode` still exists unchanged for its own
+"the node might be hidden/off-screen/culled" callers (search, same-file
+wikilink clicks, "Go to Mind Map Node").
+
+**Verification:** two new tests in `test/webviewBootstrap.test.ts` — the
+context-menu item's label/hint and that clicking it re-centers without
+changing selection; plain `Home` vs. `Ctrl/Cmd+Home` producing different
+`.mm-viewport` transforms (the latter always resetting to `scale(1)`, the
+former preserving zoom), following the existing `viewportTransform()`/
+`nextFrame()` pattern from `webviewStatePersistence.test.ts`. 500 tests
+pass (up from 498). `webview/{model,layout,render,sync,controller}`
+unchanged and still byte-identical to reference HEAD.
+
+**Cost:** none — a single `centerOnWorldPoint` call on an explicit user
+action (click or keypress), no different in kind or frequency from every
+other one-off pan this codebase already does (search result selection,
+"Go to Mind Map Node," the same-file-wikilink fix).

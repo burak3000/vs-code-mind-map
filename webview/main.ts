@@ -1149,6 +1149,7 @@ class MindMapApp implements ControllerListener {
 				disabled: target.kind === "unavailable",
 				onClick: () => this.goToNoteSection(nodeId),
 			},
+			{ label: "Center", hint: "Home", onClick: () => this.centerNode(nodeId) },
 			{ label: "Edit", hint: "F2", separatorBefore: true, onClick: () => this.controller?.requestEdit(nodeId) },
 			{ label: "Add child", hint: "Tab", onClick: () => this.controller?.addChildToSelected() },
 			{ label: "Add sibling", hint: "Enter", onClick: () => this.controller?.addSiblingToSelected("after") },
@@ -1446,6 +1447,25 @@ class MindMapApp implements ControllerListener {
 		this.container.focus();
 	}
 
+	/**
+	 * Pans (keeping the current zoom level, not resetting it like
+	 * `centerOnRoot`) so `nodeId` lands in the middle of the screen —
+	 * the "Center" context-menu item and the plain `Home` shortcut (see
+	 * `onKeyDown`). Unlike `focusNode`, this never changes fold state or
+	 * selection: the node is already selected (either the context menu's
+	 * own `select(nodeId)` above, or whatever's already the current
+	 * selection when `Home` is pressed) — this is purely "bring it back to
+	 * the middle of the screen after I've panned/zoomed away from it,"
+	 * not "reveal a possibly hidden/off-screen node."
+	 */
+	private centerNode(nodeId: string): void {
+		if (!this.renderer) return;
+		const node = this.controller?.model.byId.get(nodeId);
+		if (node?.layout) {
+			this.renderer.centerOnWorldPoint(node.layout.x + node.layout.w / 2, node.layout.y + node.layout.h / 2);
+		}
+	}
+
 	/** Unfolds whatever's hiding a node (if anything), selects it, and pans the view to center it — used for search results (and, structurally, anything else that needs to jump to a possibly off-screen/culled/folded node). */
 	private focusNode(nodeId: string): void {
 		if (!this.controller || !this.renderer) return;
@@ -1515,7 +1535,8 @@ class MindMapApp implements ControllerListener {
 	//
 	// M2 subset (Tab/Enter/F2/Delete/arrows/Escape) plus M3's additions that
 	// are *not* on VS Code's intercepted-chord list (Alt+Up/Down reorder,
-	// Ctrl/Cmd+Home, Ctrl/Cmd+C/X/V) — the intercepted ones (Ctrl/Cmd+Z et
+	// Ctrl/Cmd+Home, Ctrl/Cmd+C/X/V) and the plain (unmodified) `Home` for
+	// "center the selected node" — the intercepted ones (Ctrl/Cmd+Z et
 	// al., Ctrl/Cmd+F, Ctrl/Cmd+Shift+B, Ctrl/Cmd+/, Ctrl/Cmd+K) arrive via
 	// handleCommand instead, see above.
 
@@ -1554,6 +1575,9 @@ class MindMapApp implements ControllerListener {
 		} else if (mod && evt.key === "Home") {
 			evt.preventDefault();
 			this.renderer?.centerOnRoot();
+		} else if (evt.key === "Home" && !mod) {
+			evt.preventDefault();
+			if (this.controller.selectedId) this.centerNode(this.controller.selectedId);
 		} else if (mod && evt.key.toLowerCase() === "c") {
 			evt.preventDefault();
 			this.controller.copySelected();
