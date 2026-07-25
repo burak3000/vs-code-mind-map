@@ -610,6 +610,32 @@ describe("webview bootstrap (main.ts) — M3 feature wiring", () => {
 		expect(document.querySelector(".mm-context-menu")).toBeNull(); // closed after the click
 	});
 
+	it("'focusAtLine' (the inverse of 'Go to note section', from the text editor's context menu) selects the node nearest that line", () => {
+		// Default resetTree() text: "# Root\n## Branch A\n- child one\n- child
+		// two\n## Branch B\n- child three\n" — no frontmatter, so lines are
+		// 0:Root 1:"Branch A" 2:"child one" 3:"child two" 4:"Branch B"
+		// 5:"child three".
+		resetTree();
+
+		sendFromHost({ type: "focusAtLine", line: 3 });
+		let selected = document.querySelectorAll(".mm-selected");
+		expect(selected.length).toBe(1);
+		expect(selected[0].textContent).toContain("child two");
+
+		sendFromHost({ type: "focusAtLine", line: 4 });
+		selected = document.querySelectorAll(".mm-selected");
+		expect(selected[0].textContent).toContain("Branch B");
+
+		sendFromHost({ type: "focusAtLine", line: 0 });
+		selected = document.querySelectorAll(".mm-selected");
+		expect(selected[0].textContent).toContain("Root");
+
+		// Past the end of the document — falls back to the last node.
+		sendFromHost({ type: "focusAtLine", line: 999 });
+		selected = document.querySelectorAll(".mm-selected");
+		expect(selected[0].textContent).toContain("child three");
+	});
+
 	it("Escape / an outside click closes the context menu without acting", () => {
 		resetTree();
 		const nodeG = findNodeEl("child one");

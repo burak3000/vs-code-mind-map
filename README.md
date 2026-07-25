@@ -31,7 +31,7 @@ model.
 | R14 | Fold badge shows the hidden-descendant count |
 | R15 | Search panel (`Ctrl/Cmd+F`) with a results list; selecting a result unfolds and centers it |
 | R16 | Multi-selection (`Ctrl/Cmd`+click, `Shift`+click); bulk copy/cut/paste; copying puts real markdown on your OS clipboard |
-| R17 | Right-click context menu, including "Go to note section" (opens the underlying line in a text editor beside the map) |
+| R17 | Right-click context menu, including "Go to note section" (opens the underlying line in a text editor beside the map). The inverse also works: right-click anywhere in the plain markdown editor for "Go to Mind Map Node" — opens (or reveals) the mind map and selects the node nearest your cursor |
 | R18 | Image embeds (`![](path)`) render as thumbnails, lazily resolved as they scroll into view |
 | R19 | Depth-scaled visual hierarchy — font and box size shrink with depth |
 | R20 | Toggle between the mind map and the plain markdown editor on the same tab with `Ctrl/Cmd+M` |

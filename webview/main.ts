@@ -32,14 +32,14 @@
 // text-paste path, exactly like before this file changed.
 
 import { parseMindMap } from "./sync/parser";
-import { serializeMindMap, serializeSubtree, DEFAULT_SERIALIZE_CONFIG, SerializeConfig } from "./sync/serializer";
+import { serializeMindMap, serializeSubtree, collectMeta, DEFAULT_SERIALIZE_CONFIG, SerializeConfig } from "./sync/serializer";
 import { computeLayout, DEFAULT_LAYOUT_CONFIG, LayoutConfig, LayoutMode } from "./layout/layoutEngine";
 import { SvgRenderer } from "./render/SvgRenderer";
 import { Controller, ControllerListener } from "./controller/Controller";
 import { assignMissingColors } from "./render/colors";
 import { assignMissingSides } from "./layout/sides";
 import { findEquivalentNode } from "./sync/reconcile";
-import { ensurePersistentIds, forcePersistentId } from "./sync/metadata";
+import { ensurePersistentIds, forcePersistentId, applyMindmapData } from "./sync/metadata";
 import { InlineEditor } from "./ui/InlineEditor";
 import { SearchPanel } from "./ui/SearchPanel";
 import { LinkModal } from "./ui/LinkModal";
@@ -150,6 +150,19 @@ interface QuickPickResultMessage {
 	index: number | null;
 }
 
+/**
+ * The inverse of "Go to note section": a plain-text-editor context-menu
+ * command (`mindmapView.goToMindMapNode`, `package.json`'s
+ * `contributes.menus`) sends the cursor's 0-based line number here — never
+ * a resolved node id, since the host never parses markdown or holds a
+ * model (CLAUDE.md rule 7); only this webview's own live model can turn a
+ * line into a node. See `focusNodeAtLine`.
+ */
+interface FocusAtLineMessage {
+	type: "focusAtLine";
+	line: number;
+}
+
 type HostMessage =
 	| SetDocumentMessage
 	| CommandMessage
@@ -159,7 +172,8 @@ type HostMessage =
 	| MarkdownFilesListedMessage
 	| ForeignDocumentReadMessage
 	| ForeignDocumentWrittenMessage
-	| QuickPickResultMessage;
+	| QuickPickResultMessage
+	| FocusAtLineMessage;
 
 /** Mirrors `MindMapEditorProvider.ts`'s `MindMapWebviewConfig` and `package.json`'s `contributes.configuration` — see DECISIONS.md's dated "M4 settings" entry for which of these four apply live vs. only to the next-opened map, and why. */
 interface MindMapWebviewConfig {
@@ -416,6 +430,10 @@ class MindMapApp implements ControllerListener {
 			const resolve = this.pendingQuickPickResolvers.get(m.id);
 			this.pendingQuickPickResolvers.delete(m.id);
 			resolve?.(m.index);
+			return;
+		}
+		if (m.type === "focusAtLine") {
+			this.focusNodeAtLine(m.line);
 			return;
 		}
 		if (m.type !== "setDocument") return;
@@ -1436,6 +1454,54 @@ class MindMapApp implements ControllerListener {
 		if (node?.layout) {
 			this.renderer.centerOnWorldPoint(node.layout.x + node.layout.w / 2, node.layout.y + node.layout.h / 2);
 		}
+	}
+
+	/**
+	 * The inverse of "Go to note section" (`goToNoteSection` below): given a
+	 * 0-based line number in the *current* document (from the
+	 * `mindmapView.goToMindMapNode` text-editor context-menu command,
+	 * relayed by the host — see `FocusAtLineMessage`), finds the node
+	 * "containing" that line and focuses it, same as a search result.
+	 *
+	 * Mirrors `sync/goToSection.ts`'s `findNodeLine` — same frontmatter +
+	 * depth-first, node-then-attachedContent line accounting — but inverted:
+	 * `findNodeLine` starts from a known node id and returns its line;
+	 * this starts from a line and needs the node, so it walks once,
+	 * tracking the last node whose own line is still `<= line` (document
+	 * order + depth-first means that's always the most specific node
+	 * "covering" the given line, exactly like a text editor's own
+	 * current-section notion). `findNodeLine` itself isn't reused directly
+	 * (it doesn't support "search by line", only "look up by id" — reusing
+	 * it here would mean an O(n) call per candidate node, O(n²) overall);
+	 * this is the one, single-pass walk that same protected function's own
+	 * doc comment describes, run backwards. `sync/goToSection.ts` is
+	 * protected core (byte-identical to the reference, which has no
+	 * equivalent "reverse" feature to diverge from in the first place) —
+	 * kept out of it rather than adding an unauthorized export there for a
+	 * feature the reference plugin doesn't have at all.
+	 */
+	private focusNodeAtLine(line: number): void {
+		if (!this.controller) return;
+		const model = this.controller.model;
+		const nodesMeta: Record<string, { folded?: boolean; pos?: [number, number]; width?: number }> = {};
+		collectMeta(model.root, nodesMeta);
+		const frontmatter = applyMindmapData(model.frontmatterRaw, { nodes: nodesMeta });
+		let cursorLine = frontmatter ? frontmatter.split("\n").length : 0;
+
+		let best: MindNode = model.root;
+		if (line >= cursorLine) {
+			cursorLine += 1 + (model.root.attachedContent?.length ?? 0);
+			const walk = (node: MindNode): void => {
+				for (const child of node.children) {
+					if (cursorLine > line) return; // this child (and everything after, in document order) starts past the target line — stop, `best` is already the closest match
+					best = child;
+					cursorLine += 1 + (child.attachedContent?.length ?? 0);
+					walk(child);
+				}
+			};
+			walk(model.root);
+		}
+		this.focusNode(best.id);
 	}
 
 	// --- Sync: debounced write-back ---

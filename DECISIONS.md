@@ -2154,3 +2154,87 @@ target) — smaller than the erroneous build, not larger, since one file
 was removed.
 
 **Cost:** none — packaging-config only, no runtime code touched.
+
+---
+
+## 2026-07-21 — Feature: "Go to Mind Map Node" — the inverse of "Go to note section"
+
+**Context:** user request — from the plain markdown text editor (e.g. after
+using "Go to note section" to jump there from the map), a context-menu item
+that jumps back to the corresponding node in the mind map. No reference-repo
+counterpart exists (Obsidian's own architecture never needed this, and the
+plugin doesn't have it) — this is new, VS Code-native functionality, not a
+port.
+
+**Decision — symmetric with the forward direction, host stays a dumb
+relay:**
+- `contributes.menus`'s `editor/context` (new — this repo had no menu
+  contributions before) adds `mindmapView.goToMindMapNode`, `when:
+  editorLangId == markdown`. No keybinding (not requested; the forward
+  direction's Ctrl/Cmd+Shift+G stays the only keyboard entry point for now).
+- **Line -> node resolution happens entirely in the webview**, never the
+  host (CLAUDE.md rule 7 — the host never parses markdown or touches a
+  model). The command only ever carries a raw 0-based cursor line
+  (`editor.selection.active.line`) to whichever webview panel is or becomes
+  responsible for that document; `webview/main.ts`'s new `focusNodeAtLine`
+  resolves it against its own live model and calls the existing `focusNode`
+  (same select+center used by search results).
+- **Two panel-lifecycle cases**, both in `MindMapEditorProvider.ts`:
+  - Already open: `entry.panel.reveal()` (bring its existing tab/column to
+    front, wherever the user left it) + post `{type:"focusAtLine", line}`
+    directly.
+  - Not open yet: `vscode.openWith(uri, viewType, ViewColumn.Beside)` —
+    beside, not a same-tab swap, matching "Go to note section"'s own
+    beside-opening choice for symmetry (also leaves the source text editor
+    open, which a swap would not). The line to focus is stashed in a new
+    `pendingFocusLines: Map<uriString, line>` and delivered the moment that
+    panel's "ready" handshake arrives (right after the initial
+    `setDocument`, same message-order guarantee `postConfig`/`postDocument`
+    already rely on) — there is no way to talk to a webview that doesn't
+    exist yet, so the command can't just post-and-forget.
+- **The line->node algorithm mirrors `sync/goToSection.ts`'s exported
+  `findNodeLine`** (same frontmatter + depth-first, node-then-
+  attachedContent line accounting) but inverted: `findNodeLine` takes a
+  node id and returns its line; this needs the reverse (a line, find the
+  node), which isn't something `findNodeLine` supports without O(n) calls
+  (one per candidate node) — so it's a new single-pass walk, not a reuse of
+  that function's O(n²)-if-abused shape. Written in `webview/main.ts`
+  (platform layer), not added to `sync/goToSection.ts` — that file is
+  protected core (byte-identical to the reference, which has no equivalent
+  feature to diverge from in the first place, unlike the M5 viewport pair,
+  where an existing reference file was being extended). Consuming
+  `findNodeLine`'s own already-exported ingredients (`collectMeta`,
+  `applyMindmapData` — both public API of protected files, not modified)
+  keeps the two directions' line-numbering formula from drifting apart
+  without needing to touch or fork the protected file itself.
+
+**Alternatives considered:**
+- Resolving the line to a node **host-side** (parse the document, compute a
+  structural path or block-id, send that instead of a raw line) — rejected:
+  requires the host to import/run the platform-free parser and walk a
+  model, which is exactly the "host never parses markdown" line CLAUDE.md
+  rule 7 draws; also, node ids minted fresh by two independent parses
+  (host's vs. the webview's live one) aren't guaranteed to match at all
+  (`webview/model/id.ts`'s counter is per-process/per-load), so an
+  id-based message would be unreliable for any node without a *persisted*
+  block id — the same reasoning that ruled out a host-side fix for the
+  same-file-wikilink bug fix above.
+- Same-tab swap (like Ctrl/Cmd+M) instead of beside — rejected: would close
+  the text editor the user is actively reading, which is the opposite of
+  helpful for "I'm reading the text, show me where this is in the map."
+
+**Verification:** new tests — one in `webviewBootstrap.test.ts` (four
+`focusAtLine` cases: mid-branch, a heading, the root/frontmatter boundary,
+and past-the-end falls back to the last node) and three in
+`mindMapEditorProvider.test.ts` (reveal+post for an already-open panel, no
+new tab opened; open-beside + pending-line-delivered-after-setDocument for
+a not-yet-open one, with message ordering asserted; no-op for a
+non-markdown active editor). 498 tests pass (up from 494).
+`webview/{model,layout,render,sync,controller}` unchanged and still
+byte-identical to reference HEAD (`sync/goToSection.ts` specifically
+re-confirmed untouched).
+
+**Cost:** none on any hot path — this only runs on an explicit right-click
+menu action; the line-to-node walk is O(n) over the tree once, the same
+order of work `findNodeLine`'s own forward direction already does for
+"Go to note section."

@@ -88,8 +88,21 @@
 			{
 				"command": "mindmapView.toggleToMindMap",
 				"title": "Mind Map: Switch to Mind Map Editor"
+			},
+			{
+				"command": "mindmapView.goToMindMapNode",
+				"title": "Mind Map: Go to Mind Map Node"
 			}
 		],
+		"menus": {
+			"editor/context": [
+				{
+					"command": "mindmapView.goToMindMapNode",
+					"when": "editorLangId == markdown",
+					"group": "navigation"
+				}
+			]
+		},
 		"keybindings": [
 			{
 				"command": "mindmapView.undo",

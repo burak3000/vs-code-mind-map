@@ -150,6 +150,20 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 
 	private static readonly panels = new Set<PanelEntry>();
 
+	/**
+	 * The inverse of "Go to note section": `mindmapView.goToMindMapNode`
+	 * (a plain-text-editor context-menu item, `contributes.menus`) needs to
+	 * tell a mind map webview to focus the node nearest the cursor's line —
+	 * but if no mind map view is open for that document yet, one has to be
+	 * opened first, and its webview won't exist to receive that message
+	 * until its own "ready" handshake completes (arbitrarily later, as soon
+	 * as its bundle loads). Keyed by document URI string, consumed (deleted)
+	 * the moment that panel's "ready" arrives — see `resolveCustomTextEditor`
+	 * below, right after `postDocument()`. Never touched by the "already
+	 * open" path (`goToMindMapNodeCommand`), which posts directly instead.
+	 */
+	private static readonly pendingFocusLines = new Map<string, number>();
+
 	public static register(context: vscode.ExtensionContext): vscode.Disposable {
 		const provider = new MindMapEditorProvider(context);
 		const providerRegistration = vscode.window.registerCustomEditorProvider(MindMapEditorProvider.viewType, provider, {
@@ -221,6 +235,43 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 			await vscode.commands.executeCommand("vscode.openWith", editor.document.uri, MindMapEditorProvider.viewType);
 		});
 
+		/**
+		 * The inverse of "Go to note section" (`goToNoteSectionCommand`
+		 * above): a plain-text-editor context-menu item (`contributes.menus`,
+		 * `editor/context`, `when: editorLangId == markdown`) that jumps to
+		 * the node nearest the cursor's line in that document's mind map.
+		 * Symmetric with the forward direction's own choice (open the target
+		 * in the column *beside*, leaving the source open) when no mind map
+		 * view for this document exists yet; reveals the existing one
+		 * in place (wherever the user already had it) when it does, rather
+		 * than opening a second tab — `supportsMultipleEditorsPerDocument:
+		 * false` wouldn't allow a second one of this document anyway, but
+		 * reveal-in-place also respects a column the user may have already
+		 * chosen deliberately.
+		 *
+		 * Line -> node resolution itself is NOT done here: this host layer
+		 * never parses markdown or touches a model (CLAUDE.md rule 7) — it
+		 * only carries the raw cursor line to whichever webview ends up
+		 * receiving it, which resolves it against its own live model (see
+		 * `webview/main.ts`'s `focusNodeAtLine`).
+		 */
+		const goToMindMapNodeCommand = vscode.commands.registerCommand("mindmapView.goToMindMapNode", async () => {
+			const editor = vscode.window.activeTextEditor;
+			if (!editor || editor.document.languageId !== "markdown") return;
+			const line = editor.selection.active.line;
+			const uriString = editor.document.uri.toString();
+
+			const existing = [...MindMapEditorProvider.panels].find((e) => e.document.uri.toString() === uriString);
+			if (existing) {
+				existing.panel.reveal();
+				void existing.panel.webview.postMessage({ type: "focusAtLine", line });
+				return;
+			}
+
+			MindMapEditorProvider.pendingFocusLines.set(uriString, line);
+			await vscode.commands.executeCommand("vscode.openWith", editor.document.uri, MindMapEditorProvider.viewType, vscode.ViewColumn.Beside);
+		});
+
 		return vscode.Disposable.from(
 			providerRegistration,
 			undoCommand,
@@ -233,7 +284,8 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 			statusQuickPickCommand,
 			goToNoteSectionCommand,
 			toggleToTextCommand,
-			toggleToMindMapCommand
+			toggleToMindMapCommand,
+			goToMindMapNodeCommand
 		);
 	}
 
@@ -398,6 +450,12 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 				if (msg?.type === "ready") {
 					postConfig();
 					postDocument();
+					const uriString = document.uri.toString();
+					const pendingLine = MindMapEditorProvider.pendingFocusLines.get(uriString);
+					if (pendingLine !== undefined) {
+						MindMapEditorProvider.pendingFocusLines.delete(uriString);
+						void webview.postMessage({ type: "focusAtLine", line: pendingLine });
+					}
 				} else if (msg?.type === "writeDocument" && typeof msg.text === "string") {
 					entry.lastWriteback = applyWriteback(msg.text);
 				} else if (msg?.type === "showWarning" && typeof msg.text === "string") {

@@ -1109,3 +1109,25 @@ A–D never touched it); no `"repository"` field was added (still no git
 remote configured); nothing in `RELEASING.md` was executed (no `vsce
 publish`, no git tag/push) — consistent with the hard rules. No edits
 needed.
+
+### REMAINING FOR HUMAN — "Go to Mind Map Node" (the inverse of "Go to note section")
+
+Headless as always (`test/webviewBootstrap.test.ts`/`test/
+mindMapEditorProvider.test.ts` cover the line->node math and the
+open-vs-reveal panel logic, not real VS Code menu wiring or focus/paint).
+In a real Extension Development Host:
+
+1. Open a `.md` file as a mind map, use "Go to note section" on some node
+   to jump to its text, then right-click anywhere in that plain text
+   editor — confirm "Go to Mind Map Node" appears (only for markdown
+   files) and clicking it reveals the mind map tab (bringing it to front
+   in whatever column it's already in) with the nearest node selected and
+   centered.
+2. Close the mind map entirely, then right-click in the plain text editor
+   and choose "Go to Mind Map Node" — confirm it opens the mind map
+   **beside** the text editor (not replacing it) and still lands on the
+   right node once it finishes loading.
+3. Try it with the cursor on a heading line, a list-item line, and a blank/
+   frontmatter line — confirm each lands on the node a human would
+   intuitively expect (the heading/item itself, or the root for
+   frontmatter).

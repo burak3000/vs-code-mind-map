@@ -38,7 +38,9 @@ function makeFakeVscodeModule() {
 	const showTextDocument = vi.fn().mockResolvedValue(undefined);
 	const openExternal = vi.fn().mockResolvedValue(true);
 	const executeCommand = vi.fn().mockResolvedValue(undefined);
-	const activeTextEditorHolder: { current: { document: { uri: unknown; languageId: string } } | undefined } = { current: undefined };
+	const activeTextEditorHolder: {
+		current: { document: { uri: unknown; languageId: string }; selection: { active: { line: number } } } | undefined;
+	} = { current: undefined };
 
 	class WorkspaceEdit {
 		private edits: { uri: unknown; text: string }[] = [];
@@ -208,8 +210,10 @@ function makeFakeVscodeModule() {
 		openExternal,
 		executeCommand,
 		applyEdit,
-		setActiveTextEditor: (editor: { document: { uri: unknown; languageId: string } } | undefined) => {
-			activeTextEditorHolder.current = editor;
+		setActiveTextEditor: (
+			editor: { document: { uri: unknown; languageId: string }; selection?: { active: { line: number } } } | undefined
+		) => {
+			activeTextEditorHolder.current = editor && { ...editor, selection: editor.selection ?? { active: { line: 0 } } };
 		},
 		getRegisteredProvider: () => registeredProvider,
 		setConfigValue: (section: string, key: string, value: unknown) => configValues.set(`${section}.${key}`, value),
@@ -292,6 +296,7 @@ function makeFakeWebviewPanel() {
 				return { dispose: () => {} };
 			},
 		},
+		reveal: vi.fn(),
 		onDidDispose: (_cb: () => void) => ({ dispose: () => {} }),
 		sendFromWebview(msg: unknown) {
 			messageHandler?.(msg);
@@ -564,6 +569,60 @@ describe("MindMapEditorProvider (host)", () => {
 		fakeVscode.setActiveTextEditor({ document: { uri: { toString: () => "file:///x.json" }, languageId: "json" } });
 
 		await fakeVscode.registeredCommands.get("mindmapView.toggleToMindMap")!();
+		expect(fakeVscode.executeCommand).not.toHaveBeenCalled();
+	});
+
+	it("mindmapView.goToMindMapNode (the inverse of 'Go to note section'): reveals an already-open mind map panel in place and posts the cursor's line, without opening a new tab", async () => {
+		const provider = register();
+		const panel = makeFakeWebviewPanel();
+		const document = makeFakeDocument("# Root\n## Branch A\n- child one\n");
+		await provider.resolveCustomTextEditor(
+			document as unknown as import("vscode").TextDocument,
+			panel as unknown as import("vscode").WebviewPanel,
+			{} as import("vscode").CancellationToken
+		);
+		(panel.webview.postMessage as ReturnType<typeof vi.fn>).mockClear();
+
+		fakeVscode.setActiveTextEditor({ document: { uri: document.uri, languageId: "markdown" }, selection: { active: { line: 2 } } });
+		await fakeVscode.registeredCommands.get("mindmapView.goToMindMapNode")!();
+
+		expect(panel.reveal).toHaveBeenCalled();
+		expect(panel.webview.postMessage).toHaveBeenCalledWith({ type: "focusAtLine", line: 2 });
+		expect(fakeVscode.executeCommand).not.toHaveBeenCalledWith("vscode.openWith", expect.anything(), expect.anything(), expect.anything());
+	});
+
+	it("mindmapView.goToMindMapNode opens the mind map beside (when none is open yet for this document) and delivers the cursor's line once the new panel signals ready", async () => {
+		const { MindMapEditorProvider: Provider } = await import("../src/MindMapEditorProvider");
+		const provider = register();
+		const document = makeFakeDocument("# Root\n## Branch A\n- child one\n", "file:///workspace/notes/fresh.md");
+		fakeVscode.setActiveTextEditor({ document: { uri: document.uri, languageId: "markdown" }, selection: { active: { line: 1 } } });
+
+		await fakeVscode.registeredCommands.get("mindmapView.goToMindMapNode")!();
+		expect(fakeVscode.executeCommand).toHaveBeenCalledWith("vscode.openWith", document.uri, Provider.viewType, -2 /* ViewColumn.Beside, per the fake */);
+
+		// The panel didn't exist yet when the command ran — simulate VS Code
+		// actually resolving the custom editor now, then the webview's ready
+		// handshake, and confirm the pending line is delivered right after
+		// the initial document, not lost.
+		const panel = makeFakeWebviewPanel();
+		await provider.resolveCustomTextEditor(
+			document as unknown as import("vscode").TextDocument,
+			panel as unknown as import("vscode").WebviewPanel,
+			{} as import("vscode").CancellationToken
+		);
+		panel.sendFromWebview({ type: "ready" });
+
+		expect(panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "setDocument" }));
+		expect(panel.webview.postMessage).toHaveBeenCalledWith({ type: "focusAtLine", line: 1 });
+		const calls = (panel.webview.postMessage as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[0] as { type?: string }).type);
+		expect(calls.indexOf("setDocument")).toBeLessThan(calls.indexOf("focusAtLine")); // document arrives before the focus request that depends on it
+	});
+
+	it("mindmapView.goToMindMapNode is a no-op for a non-markdown active editor", async () => {
+		register();
+		fakeVscode.setActiveTextEditor({ document: { uri: { toString: () => "file:///x.json" }, languageId: "json" } });
+
+		await fakeVscode.registeredCommands.get("mindmapView.goToMindMapNode")!();
 		expect(fakeVscode.executeCommand).not.toHaveBeenCalled();
 	});
 

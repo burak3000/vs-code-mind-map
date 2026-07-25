@@ -6,6 +6,19 @@ post-M5 catch-up bringing over feature work the reference plugin gained
 afterward; there has been no public release yet (`version` in
 `package.json` is still `0.0.1`).
 
+## Unreleased — Fixes, and "Go to Mind Map Node"
+
+- **New:** "Go to Mind Map Node" — the inverse of "Go to note section."
+  Right-click anywhere in a markdown file's plain text editor for a context
+  menu item that opens (or reveals) that file's mind map and selects the
+  node nearest your cursor.
+- **Fix:** clicking a same-document relation link (e.g. `[[#^blockid]]`)
+  tried to open a file literally named `#^blockid.md` and failed. It now
+  focuses the target node in the already-open map instead.
+- **Fix:** the packaged `.vsix` could pick up stray scratch notes left in
+  the repo root (e.g. a manual-testing `.md` file); only `README.md`/
+  `CHANGELOG.md` ship now, by default rather than by name.
+
 ## Unreleased — Post-M5 catch-up: node relations & status badges
 
 Catch-up work bringing this extension in line with feature additions made
