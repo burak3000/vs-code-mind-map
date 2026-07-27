@@ -144,6 +144,28 @@ function nodeBoxFor(node: MindNode, cfg: LayoutConfig): NodeBox {
 }
 
 /**
+ * Estimates the total rendered vertical extent (px) of `node`'s own subtree —
+ * `sides.ts`'s `assignInitialSplit` uses this (instead of a node-count proxy)
+ * to balance first-level branches by actual visual height, so a branch with
+ * a few long/wrapped-text nodes isn't treated as "lighter" than a branch with
+ * many short ones. Mirrors flextree's own breadth-axis accumulation (a
+ * node's extent is the larger of its own box height and the summed extent of
+ * its visible children) without paying for a full tidy-tree layout pass —
+ * reuses the same `nodeBoxFor` cache `computeLayout` fills right after, so
+ * text is never wrapped twice for the same node. Respects `folded` (a folded
+ * branch's hidden children contribute nothing), same as `layoutSide`'s own
+ * children accessor.
+ */
+export function estimateSubtreeHeight(node: MindNode, cfg: LayoutConfig): number {
+	const box = nodeBoxFor(node, cfg);
+	const ownExtent = box.h + cfg.siblingGap;
+	if (node.folded || node.children.length === 0) return ownExtent;
+	let childrenExtent = 0;
+	for (const child of node.children) childrenExtent += estimateSubtreeHeight(child, cfg);
+	return Math.max(ownExtent, childrenExtent);
+}
+
+/**
  * Splits by each branch's already-assigned `branchSide` (contiguous
  * document-order split — see `assignMissingSides`/DECISIONS.md) for the
  * anticlockwise arrangement: left reads top→bottom, so it keeps document

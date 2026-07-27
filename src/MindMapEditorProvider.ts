@@ -240,11 +240,12 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 		 * above): a plain-text-editor context-menu item (`contributes.menus`,
 		 * `editor/context`, `when: editorLangId == markdown`) that jumps to
 		 * the node nearest the cursor's line in that document's mind map.
-		 * Symmetric with the forward direction's own choice (open the target
-		 * in the column *beside*, leaving the source open) when no mind map
-		 * view for this document exists yet; reveals the existing one
-		 * in place (wherever the user already had it) when it does, rather
-		 * than opening a second tab — `supportsMultipleEditorsPerDocument:
+		 * Symmetric with the forward direction's own choice (revised
+		 * 2026-07-25, see DECISIONS.md: open the target in the *active*
+		 * column — a new tab, not a split — leaving the source open) when no
+		 * mind map view for this document exists yet; reveals the existing
+		 * one in place (wherever the user already had it) when it does,
+		 * rather than opening a second tab — `supportsMultipleEditorsPerDocument:
 		 * false` wouldn't allow a second one of this document anyway, but
 		 * reveal-in-place also respects a column the user may have already
 		 * chosen deliberately.
@@ -269,7 +270,7 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 
 			MindMapEditorProvider.pendingFocusLines.set(uriString, line);
-			await vscode.commands.executeCommand("vscode.openWith", editor.document.uri, MindMapEditorProvider.viewType, vscode.ViewColumn.Beside);
+			await vscode.commands.executeCommand("vscode.openWith", editor.document.uri, MindMapEditorProvider.viewType, vscode.ViewColumn.Active);
 		});
 
 		return vscode.Disposable.from(
@@ -418,13 +419,22 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 		 * before it's even called) so the self-write-suppression check above
 		 * is correct regardless of how the async edit/event ordering plays
 		 * out.
+		 *
+		 * `serializeMindMap` (webview/sync/serializer.ts) always joins with
+		 * `\n` — `TextEdit`'s replacement text is inserted verbatim, VS Code
+		 * does not consult `document.eol` and convert for you — so a CRLF
+		 * document (the Windows default) would otherwise get silently
+		 * flattened to LF on the very next edit, touching every line. Convert
+		 * back to `\r\n` here when the document is CRLF, so a write-back only
+		 * ever changes the lines that actually changed.
 		 */
 		const applyWriteback = async (text: string) => {
-			if (text === document.getText()) return; // no-op — nothing actually changed
+			const eolText = document.eol === vscode.EndOfLine.CRLF ? text.replace(/\n/g, "\r\n") : text;
+			if (eolText === document.getText()) return; // no-op — nothing actually changed
 			const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length));
 			const edit = new vscode.WorkspaceEdit();
-			edit.replace(document.uri, fullRange, text);
-			lastAppliedText = text;
+			edit.replace(document.uri, fullRange, eolText);
+			lastAppliedText = eolText;
 			await vscode.workspace.applyEdit(edit);
 		};
 
@@ -574,12 +584,17 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 	 * flushed the pending write (flushWrite/flushAck round trip) before
 	 * sending this message, so `document` is current, not stale.
 	 *
-	 * Open semantics (user-decided 2026-07-17, see DECISIONS.md): open the
-	 * document as a plain text editor in the column **beside** the map and
-	 * reveal the target line, leaving the mind map tab itself open and
-	 * untouched — the least-destructive of the three options (new column /
-	 * replace tab / Reopen With), and the closest match to the reference
-	 * plugin's own "always opens in a new tab" behavior.
+	 * Open semantics (user-decided 2026-07-17, revised 2026-07-25, see
+	 * DECISIONS.md): open the document as a plain text editor in the
+	 * **active** column (i.e. the map's own column — a new tab there, not a
+	 * split) and reveal the target line, leaving the mind map tab itself
+	 * open and untouched. The original 2026-07-17 decision used `Beside`
+	 * (a new column) to mirror the reference plugin's "always opens in a
+	 * new tab" wording, but in VS Code that forces a two-column split,
+	 * which the user found disruptive for a same-window jump — `Active`
+	 * still opens a genuinely new tab (VS Code tracks the custom mind-map
+	 * editor and the plain text editor as distinct tabs for the same URI)
+	 * without ever dividing the screen.
 	 *
 	 * This custom-editor-plus-text-editor coexistence on one document is the
 	 * exact same arrangement M2's split-view sync already relies on;
@@ -595,7 +610,7 @@ export class MindMapEditorProvider implements vscode.CustomTextEditorProvider {
 		const safeLine = Math.max(0, Math.min(line, Math.max(0, document.lineCount - 1)));
 		const pos = new vscode.Position(safeLine, 0);
 		await vscode.window.showTextDocument(document, {
-			viewColumn: vscode.ViewColumn.Beside,
+			viewColumn: vscode.ViewColumn.Active,
 			selection: new vscode.Range(pos, pos),
 		});
 	}

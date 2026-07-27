@@ -1,6 +1,6 @@
 # VS Code Mind Map Extension — Project Instructions
 
-XMind-like mind mapping custom editor for VS Code that operates directly on
+Mind mapping custom editor for VS Code that operates directly on
 `.md` files with true bidirectional sync. This is a port of the Obsidian
 plugin at `/Users/burakucbinli/projects/obsidian` — that repo is the
 reference implementation; consult its `DECISIONS.md` and `benchmarks.md`

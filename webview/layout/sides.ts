@@ -1,4 +1,5 @@
 import { MindNode } from "../model/types";
+import { DEFAULT_LAYOUT_CONFIG, estimateSubtreeHeight, LayoutConfig } from "./layoutEngine";
 
 /**
  * Assigns sides to first-level branches so that, read anticlockwise, they
@@ -6,17 +7,20 @@ import { MindNode } from "../model/types";
  * prefix `1..K` (top→bottom), right side is the suffix `K+1..N`
  * (bottom→top — the reversal for that reading direction happens in
  * `layoutEngine.ts`'s `partitionChildren`, not here). The split index K is
- * chosen to balance subtree weight, but — per the user's decision (see
- * DECISIONS.md) — only ever *recomputed* on an explicit Rebalance
- * (`clearAllSides` + this function), never as a side effect of an ordinary
- * edit: a branch added/removed anywhere else in the tree would otherwise
- * touch nearly every node's position on every keystroke-adjacent edit
- * (measured pre-fix: one Tab on a 5,000-node map moved 4,999 of them and
- * flipped 2 of 10 branches to the other side).
+ * chosen to balance total *rendered height* (px, via `estimateSubtreeHeight`
+ * — not node count: a branch with a few long/wrapped-text nodes can easily
+ * be visually taller than a branch with many short ones, see DECISIONS.md's
+ * dated "Rebalance balances by height, not node count" entry), but — per the
+ * user's decision (see DECISIONS.md) — only ever *recomputed* on an explicit
+ * Rebalance (`clearAllSides` + this function), never as a side effect of an
+ * ordinary edit: a branch added/removed anywhere else in the tree would
+ * otherwise touch nearly every node's position on every keystroke-adjacent
+ * edit (measured pre-fix: one Tab on a 5,000-node map moved 4,999 of them
+ * and flipped 2 of 10 branches to the other side).
  *
  * Two cases:
  * - **No branch has a side yet** (first open of a map, or right after
- *   Rebalance clears them all): compute a fresh weight-balanced contiguous
+ *   Rebalance clears them all): compute a fresh height-balanced contiguous
  *   split from scratch.
  * - **Some branches already have sides** (the common edit-time case — one
  *   new first-level branch just got created): each side-less branch
@@ -26,12 +30,12 @@ import { MindNode } from "../model/types";
  *   correct run instead of picking a side by weight and potentially
  *   breaking the left/right document-order boundary.
  */
-export function assignMissingSides(root: MindNode): void {
+export function assignMissingSides(root: MindNode, cfg: LayoutConfig = DEFAULT_LAYOUT_CONFIG): void {
 	const children = root.children;
 	if (children.length === 0) return;
 
 	if (children.every((c) => !c.branchSide)) {
-		assignInitialSplit(children);
+		assignInitialSplit(children, cfg);
 		return;
 	}
 
@@ -47,15 +51,20 @@ export function assignMissingSides(root: MindNode): void {
 }
 
 /**
- * Fresh weight-balanced contiguous split: finds the K (0..N) that minimizes
- * `|weight(1..K) − weight(K+1..N)|` and assigns the first K children (in
- * document order) to Left, the rest to Right. O(N) over first-level
- * branches only — negligible even at the 5,000-node stress fixture.
+ * Fresh height-balanced contiguous split: finds the K (0..N) that minimizes
+ * `|height(1..K) − height(K+1..N)|` (estimated rendered px, via
+ * `estimateSubtreeHeight`) and assigns the first K children (in document
+ * order) to Left, the rest to Right. O(N) over *all* nodes in the tree (each
+ * visited once across the whole `estimateSubtreeHeight` recursion, reusing
+ * `layoutEngine.ts`'s own text-wrap cache) — the same order as the
+ * `computeLayout` pass that immediately follows, so this only roughly
+ * doubles Rebalance's cost, not the cost of every edit (this function only
+ * runs on an explicit Rebalance or first open — see `assignMissingSides`).
  * Ties prefer the larger K (more on the left) so a lone branch (or an
  * exact tie) defaults to the side that starts the anticlockwise reading.
  */
-function assignInitialSplit(children: MindNode[]): void {
-	const weights = children.map((c) => 1 + c.subtreeCount);
+function assignInitialSplit(children: MindNode[], cfg: LayoutConfig): void {
+	const weights = children.map((c) => estimateSubtreeHeight(c, cfg));
 	const total = weights.reduce((sum, w) => sum + w, 0);
 
 	let prefix = 0;

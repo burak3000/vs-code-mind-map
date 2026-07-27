@@ -569,7 +569,7 @@ class MindMapApp implements ControllerListener {
 
 		const model = parseMindMap(text, this.title);
 		assignMissingColors(model.root);
-		assignMissingSides(model.root);
+		assignMissingSides(model.root, this.layoutConfig);
 		computeLayout(model.root, this.layoutConfig);
 		// R1a/R2: classify every node's links before the first mount, so
 		// relation arrows and cross-doc badges are present from the very
@@ -639,7 +639,7 @@ class MindMapApp implements ControllerListener {
 			if (oldChild.branchSide) newChild.branchSide = oldChild.branchSide;
 		});
 		assignMissingColors(newModel.root);
-		assignMissingSides(newModel.root);
+		assignMissingSides(newModel.root, this.layoutConfig);
 		computeLayout(newModel.root, this.layoutConfig);
 		const activeRelations = resolveRelations(newModel, this.title);
 
@@ -666,7 +666,7 @@ class MindMapApp implements ControllerListener {
 	onChange(): void {
 		if (!this.controller || !this.renderer) return;
 		assignMissingColors(this.controller.model.root);
-		assignMissingSides(this.controller.model.root);
+		assignMissingSides(this.controller.model.root, this.layoutConfig);
 		computeLayout(this.controller.model.root, this.layoutConfig);
 		// R1a/R2: re-classify every node's links against the now-current tree
 		// (a rename/delete/undo can change which block ids exist) *before*

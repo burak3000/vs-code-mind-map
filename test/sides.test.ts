@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseMindMap } from "../webview/sync/parser";
 import { assignMissingSides, clearAllSides } from "../webview/layout/sides";
+import { DEFAULT_LAYOUT_CONFIG, estimateSubtreeHeight } from "../webview/layout/layoutEngine";
 
 describe("assignMissingSides", () => {
 	it("gives every first-level branch a side", () => {
@@ -95,6 +96,62 @@ describe("assignMissingSides", () => {
 		clearAllSides(model.root);
 		assignMissingSides(model.root);
 		expect(model.root.children.every((c) => c.branchSide === "L" || c.branchSide === "R")).toBe(true);
+	});
+
+	it("balances by estimated rendered height, not node count, when the two disagree", () => {
+		// "Long" has a single child but its text wraps to dozens of lines —
+		// far taller than "Short1"/"Short2" combined despite having the
+		// fewest descendants. A node-count split (old `1 + subtreeCount`
+		// weight) would pair "Long" (weight 2) with "Short1" (weight 4) on
+		// one side against "Short2" (weight 4) alone on the other (k=2,
+		// diff=2) — this asserts the height-aware split instead isolates
+		// "Long" by itself (k=1), since its rendered height alone dwarfs
+		// "Short1" + "Short2" combined.
+		const longText = "word ".repeat(400).trim(); // many short tokens so the greedy wrapper actually breaks lines (a single unbroken token is never split, see textWrap.ts)
+		const md = [
+			"# Root",
+			"## Long",
+			`- ${longText}`,
+			"## Short1",
+			"- a",
+			"- b",
+			"- c",
+			"## Short2",
+			"- d",
+			"- e",
+			"- f",
+		].join("\n");
+		const model = parseMindMap(md, "fallback");
+		const [long, short1, short2] = model.root.children;
+
+		assignMissingSides(model.root, DEFAULT_LAYOUT_CONFIG);
+
+		expect(long.branchSide).not.toBe(short1.branchSide);
+		expect(short1.branchSide).toBe(short2.branchSide);
+	});
+});
+
+describe("estimateSubtreeHeight", () => {
+	it("grows with wrapped text length, not just descendant count", () => {
+		const shortMd = ["# Root", "## A", "- a", "- b", "- c"].join("\n");
+		const longMd = ["# Root", "## A", `- ${"word ".repeat(400).trim()}`].join("\n");
+		const shortBranch = parseMindMap(shortMd, "fallback").root.children[0]; // 3 descendants
+		const longBranch = parseMindMap(longMd, "fallback").root.children[0]; // 1 descendant, many wrapped lines
+
+		expect(1 + shortBranch.subtreeCount).toBeGreaterThan(1 + longBranch.subtreeCount); // node-count says shortBranch is "heavier"
+		expect(estimateSubtreeHeight(longBranch, DEFAULT_LAYOUT_CONFIG)).toBeGreaterThan(
+			estimateSubtreeHeight(shortBranch, DEFAULT_LAYOUT_CONFIG)
+		); // rendered height says the opposite
+	});
+
+	it("excludes a folded node's children (matches layoutSide's own visibility rule)", () => {
+		const md = ["# Root", "## A", "- a1", "  - a2", "  - a3"].join("\n");
+		const model = parseMindMap(md, "fallback");
+		const a = model.root.children[0];
+		const collapsed = estimateSubtreeHeight(a, DEFAULT_LAYOUT_CONFIG);
+		a.folded = true;
+		const folded = estimateSubtreeHeight(a, DEFAULT_LAYOUT_CONFIG);
+		expect(folded).toBeLessThan(collapsed);
 	});
 });
 

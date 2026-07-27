@@ -2289,3 +2289,142 @@ unchanged and still byte-identical to reference HEAD.
 action (click or keypress), no different in kind or frequency from every
 other one-off pan this codebase already does (search result selection,
 "Go to Mind Map Node," the same-file-wikilink fix).
+
+## 2026-07-25 — Bug fix: write-back silently flattened CRLF documents to LF
+
+**Problem (found during a Windows-compatibility audit):** `serializeMindMap`
+(`webview/sync/serializer.ts`) always joins lines with `\n`, and the host's
+`applyWriteback` (`src/MindMapEditorProvider.ts`) passed that text straight
+to a `WorkspaceEdit.replace` over the full document range. VS Code's
+`TextEdit` inserts replacement text verbatim — it does not consult
+`document.eol` and convert for you — so on a CRLF document (the Windows
+default for files created/edited outside a `core.autocrlf`-normalized git
+flow) the very next edit from the mind map view would silently rewrite the
+entire file to LF, touching every line in the git diff, not just the one
+node that actually changed. Reads were never affected: the parser already
+splits on `/\r?\n/` throughout `webview/sync/parser.ts` and
+`webview/sync/metadata.ts`.
+
+**Decision:** `applyWriteback` now checks `document.eol` and converts the
+serializer's `\n`-joined text back to `\r\n` before diffing/writing when the
+document is CRLF, so a write-back only ever changes the lines that actually
+changed, regardless of the file's original line-ending convention.
+
+**Alternatives considered:** normalizing everything to LF everywhere
+(parser + serializer) and accepting the one-time CRLF→LF flip — rejected,
+since it forces every Windows CRLF file through an unwanted, surprising
+conversion the user never asked for, and is likely to conflict with a
+repo's own `.gitattributes`/`core.autocrlf` conventions.
+
+**Verification:** new test in `test/mindMapEditorProvider.test.ts`
+("converts the serializer's LF-joined text back to CRLF when writing back
+to a CRLF document") — a CRLF fake document round-trips a `writeDocument`
+message and ends up with `\r\n` line endings, not `\n`. 501 tests pass (up
+from 500). `tsc -noEmit` clean on both configs.
+
+**Cost:** none — one `.replace(/\n/g, "\r\n")` on the already-computed
+write-back string, only when `document.eol === vscode.EndOfLine.CRLF`; no
+extra work on the (default) LF path.
+
+## 2026-07-25 — Bug fix: Rebalance balances by node count, not rendered height
+
+**Problem (user-reported):** on a map with just two top-level branches,
+Rebalance left one branch's on-screen subtree far taller than the other's.
+`assignInitialSplit` (`webview/layout/sides.ts`) picked the left/right split
+by minimizing `|weight(1..K) − weight(K+1..N)|`, where `weight = 1 +
+subtreeCount` — a plain descendant *count*, blind to per-node rendered
+height (which depends on wrapped-text line count and image thumbnails, via
+`computeNodeBox` in `layoutEngine.ts`). A branch with a few long/wrapped
+nodes can be visually much taller than a branch with many short ones, and
+with only two branches there's nothing else to redistribute — whichever one
+is actually taller stays taller no matter how many times you Rebalance.
+
+**Decision:** `assignInitialSplit` now weighs each branch by
+`estimateSubtreeHeight` (new export, `layoutEngine.ts`) — an estimated
+rendered px height, computed by recursively summing `nodeBoxFor` box
+heights (+ `siblingGap`) over the branch's *visible* subtree (respecting
+`folded`, mirroring `layoutSide`'s own children accessor), taking the max of
+a node's own height and its children's summed height at each level (mirrors
+flextree's own breadth-axis accumulation without paying for a full
+tidy-tree pass). `assignMissingSides`/`assignInitialSplit` now take the
+`LayoutConfig` needed to compute boxes; the three call sites in
+`webview/main.ts` (`buildFromScratch`, `rebuildFromExternalText`, `onChange`)
+already had `this.layoutConfig` in scope. Note this still can't force a
+2-branch map to look height-balanced — see the "Two cases" doc comment on
+`assignMissingSides`; the fix widens the split search from a bad proxy to
+an accurate one for the ≥3-branch case, and stops the ≥3-branch case from
+picking a *worse* split than a human eyeballing the map would.
+
+**Cost:** `estimateSubtreeHeight` is an O(N) walk over the whole tree (N =
+visible nodes), same order as `computeLayout` itself, and reuses
+`layoutEngine.ts`'s own `nodeBoxFor` cache (keyed by node identity), so
+`computeLayout`'s later pass never re-wraps the same text. Per the existing
+"only ever recomputed on Rebalance/first-open, never per-edit" invariant
+(`assignMissingSides`'s own doc comment — unchanged by this fix), this
+roughly doubles Rebalance's own cost, not the cost of an ordinary edit.
+Measured via `npm run bench:m1` (which times `parseMindMap` +
+`assignMissingSides` + `computeLayout` together): 5,000 nodes
+parse+sides=8.3ms, layout=30.3ms, total=38.6ms — well inside the 2,000ms
+open budget, and this is the *heavier* combined path since `bench:m1`
+already includes the height-estimation walk in its "parse" phase.
+
+**Verification:** two new tests in `test/sides.test.ts`
+(`estimateSubtreeHeight` describe block) confirm rendered height and node
+count actively disagree on a constructed 3-branch case and that Rebalance
+follows height, not count; a third confirms folded children are excluded.
+504 tests pass (up from 501). `tsc -noEmit` clean on both configs.
+
+## 2026-07-25 — Revision: "Go to note section" opens in the map's own column, not beside it
+
+**Follow-up to the 2026-07-17 "both escalations resolved by the user"
+entry above** (append-only — that entry stays as the historical record of
+the original decision; this supersedes it).
+
+**Problem (user-reported):** the original decision used
+`vscode.ViewColumn.Beside`, chosen to mirror the reference plugin's
+"always opens in a new tab" wording — but in VS Code, `Beside` always
+splits the editor area into two columns, which the user found disruptive
+for a same-window jump they expected to just add a tab.
+
+**Decision:** `goToSection` (`src/MindMapEditorProvider.ts`) now calls
+`showTextDocument` with `viewColumn: vscode.ViewColumn.Active` instead of
+`Beside`. `Active` targets whatever column currently has focus — the
+map's own column, since that's where the "Go to note section" action was
+just triggered from — and VS Code still opens the plain-text editor as a
+genuinely separate tab there (it tracks the custom mind-map editor and a
+plain text editor on the same URI as distinct tabs), so the mind map tab
+stays open and untouched, exactly as before; only the split is gone.
+
+**Cost:** none — same API call, different enum value.
+
+**Verification:** updated `test/mindMapEditorProvider.test.ts`'s
+`goToSection` test to assert `ViewColumn.Active` (fake value `-1`) instead
+of `Beside` (`-2`). 504 tests pass. `tsc -noEmit` clean on both configs.
+Note: "Go to Mind Map Node" (`mindmapView.goToMindMapNode`, the inverse
+command) initially stayed on `Beside` on purpose-built symmetry with the
+old decision — see the immediately following entry for why that changed
+too, minutes later in the same session.
+
+## 2026-07-25 — Revision: "Go to Mind Map Node" follows the same column-not-split change
+
+**Follow-up to the entry immediately above.** The user asked for the same
+fix on the inverse direction: `mindmapView.goToMindMapNode`'s "not open
+yet" branch (`src/MindMapEditorProvider.ts`) called `vscode.openWith(uri,
+viewType, vscode.ViewColumn.Beside)`, deliberately mirroring the old
+`goToSection` decision — so it inherited the same split-screen complaint.
+The "already open" branch (`existing.panel.reveal()`) was never affected;
+it always revealed in place.
+
+**Decision:** changed to `vscode.ViewColumn.Active`, identical reasoning
+to the `goToSection` fix above — opens the mind map as a new tab in
+whatever column currently has focus (the markdown editor's own column)
+rather than splitting.
+
+**Cost:** none — same API call, different enum value.
+
+**Verification:** updated `test/mindMapEditorProvider.test.ts`'s
+`goToMindMapNode` "not open yet" test to assert `ViewColumn.Active` (`-1`)
+instead of `Beside` (`-2`). 504 tests pass (test count unchanged — an
+assertion value update, not a new test). `tsc -noEmit` clean on both
+configs. Both directions ("Go to note section" and "Go to Mind Map Node")
+are now consistent: same-column new tab, never a split.

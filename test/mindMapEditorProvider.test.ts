@@ -15,6 +15,7 @@ interface FakeDocument {
 	uri: { toString(): string; fsPath: string };
 	fileName: string;
 	version: number;
+	eol: number;
 	getText(): string;
 	positionAt(offset: number): number;
 	readonly lineCount: number;
@@ -144,6 +145,7 @@ function makeFakeVscodeModule() {
 				) {}
 			},
 			ViewColumn: { Beside: -2, Active: -1, One: 1, Two: 2 },
+			EndOfLine: { LF: 1, CRLF: 2 },
 			WorkspaceEdit,
 			Disposable: {
 				from: (...disposables: { dispose(): void }[]) => ({
@@ -256,12 +258,13 @@ const fakeVscode = makeFakeVscodeModule();
 
 vi.mock("vscode", () => fakeVscode.module);
 
-function makeFakeDocument(text: string, uriStr = "file:///fixture.md") {
+function makeFakeDocument(text: string, uriStr = "file:///fixture.md", eol: number = fakeVscode.module.EndOfLine.LF) {
 	const fsPath = uriStr.replace(/^file:\/\//, "");
 	const doc: FakeDocument & { _text: string } = {
 		uri: { toString: () => uriStr, fsPath },
 		fileName: "fixture.md",
 		version: 1,
+		eol,
 		_text: text,
 		getText() {
 			return this._text;
@@ -357,6 +360,18 @@ describe("MindMapEditorProvider (host)", () => {
 		await vi.waitFor(() => expect(fakeVscode.applyEdit).toHaveBeenCalledTimes(1));
 
 		expect(document.getText()).toBe("# Root\n## Child\n");
+	});
+
+	it("converts the serializer's LF-joined text back to CRLF when writing back to a CRLF document", async () => {
+		const provider = register();
+		const document = makeFakeDocument("# Root\r\n", "file:///fixture.md", fakeVscode.module.EndOfLine.CRLF);
+		const panel = makeFakeWebviewPanel();
+		await provider.resolveCustomTextEditor(document as unknown as import("vscode").TextDocument, panel as unknown as import("vscode").WebviewPanel, {} as import("vscode").CancellationToken);
+
+		panel.sendFromWebview({ type: "writeDocument", text: "# Root\n## Child\n" });
+		await vi.waitFor(() => expect(fakeVscode.applyEdit).toHaveBeenCalledTimes(1));
+
+		expect(document.getText()).toBe("# Root\r\n## Child\r\n");
 	});
 
 	it("does not forward its own write-back as an external edit to the webview (self-write suppression)", async () => {
@@ -497,7 +512,7 @@ describe("MindMapEditorProvider (host)", () => {
 		expect((uri as { fsPath: string }).fsPath).toBe("/workspace/notes/Some Note.md");
 	});
 
-	it("goToSection: opens the document as a text editor in the column beside the map, revealing the resolved target line", async () => {
+	it("goToSection: opens the document as a text editor in the map's own (active) column, not a split, revealing the resolved target line", async () => {
 		const provider = register();
 		const panel = makeFakeWebviewPanel();
 		const document = makeFakeDocument("# Root\n## Branch A\n- child one\n- child two\n");
@@ -508,7 +523,7 @@ describe("MindMapEditorProvider (host)", () => {
 
 		const [doc, options] = fakeVscode.showTextDocument.mock.calls[0];
 		expect(doc).toBe(document);
-		expect(options.viewColumn).toBe(-2); // ViewColumn.Beside, per the fake
+		expect(options.viewColumn).toBe(-1); // ViewColumn.Active, per the fake — a new tab, not a split
 		expect(options.selection.start.line).toBe(2);
 		expect(options.selection.end.line).toBe(2);
 		// Not the info-message stub any more, and not routed through vscode.open.
@@ -591,14 +606,14 @@ describe("MindMapEditorProvider (host)", () => {
 		expect(fakeVscode.executeCommand).not.toHaveBeenCalledWith("vscode.openWith", expect.anything(), expect.anything(), expect.anything());
 	});
 
-	it("mindmapView.goToMindMapNode opens the mind map beside (when none is open yet for this document) and delivers the cursor's line once the new panel signals ready", async () => {
+	it("mindmapView.goToMindMapNode opens the mind map in the active column (when none is open yet for this document), not a split, and delivers the cursor's line once the new panel signals ready", async () => {
 		const { MindMapEditorProvider: Provider } = await import("../src/MindMapEditorProvider");
 		const provider = register();
 		const document = makeFakeDocument("# Root\n## Branch A\n- child one\n", "file:///workspace/notes/fresh.md");
 		fakeVscode.setActiveTextEditor({ document: { uri: document.uri, languageId: "markdown" }, selection: { active: { line: 1 } } });
 
 		await fakeVscode.registeredCommands.get("mindmapView.goToMindMapNode")!();
-		expect(fakeVscode.executeCommand).toHaveBeenCalledWith("vscode.openWith", document.uri, Provider.viewType, -2 /* ViewColumn.Beside, per the fake */);
+		expect(fakeVscode.executeCommand).toHaveBeenCalledWith("vscode.openWith", document.uri, Provider.viewType, -1 /* ViewColumn.Active, per the fake */);
 
 		// The panel didn't exist yet when the command ran — simulate VS Code
 		// actually resolving the custom editor now, then the webview's ready
