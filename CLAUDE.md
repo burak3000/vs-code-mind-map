@@ -69,5 +69,12 @@ repo). 5,000 is a stress test — degradation must be graceful, never a freeze.
 - Manual verification happens in a real VS Code window (Extension
   Development Host, F5). jsdom/Node benchmarks don't paint pixels — report
   this limitation instead of claiming visual verification.
-- No GitHub Actions workflow is used for this project — builds/releases are
-  manual; don't introduce a `.github/workflows/` pipeline.
+- A single GitHub Actions workflow, `.github/workflows/release.yml`, exists
+  and is intentional (added 2026-09-14, mirroring the reference Obsidian
+  repo's `release.yml`): pushing a `vX.Y.Z` tag on `main` runs the test
+  suite, packages a `.vsix`, and publishes it as a GitHub Release so users
+  can install it via "Install from VSIX" without waiting on a Marketplace
+  listing. Don't introduce any *other* workflow (CI-on-every-push, lint
+  gates, etc.) without asking first — this one exists for releases only.
+  Marketplace publishing (`vsce publish`) stays the manual, credentialed
+  step documented in `RELEASING.md` — the workflow never runs it.

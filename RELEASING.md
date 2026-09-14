@@ -3,6 +3,15 @@
 Everything in this file is run by a human, not by an agent — publishing is a
 credentialed, outward-facing action. Nothing here has been executed for you.
 
+There are two separate release surfaces:
+
+1. **GitHub Releases** (`.vsix` download, install via "Install from VSIX") —
+   automated by `.github/workflows/release.yml` once you push a version tag.
+   No publisher account or PAT needed for this path.
+2. **VS Code Marketplace** (`vsce publish`) — fully manual, credentialed,
+   and separate; do this only once you're ready, after GitHub-release
+   testing. See "One-time setup" and the Marketplace step below.
+
 ## One-time setup
 
 1. **Publisher id.** `package.json`'s `"publisher"` is still the placeholder
@@ -37,10 +46,9 @@ credentialed, outward-facing action. Nothing here has been executed for you.
    (this repo's git identity) as the copyright holder — confirm that's the
    name/entity you want on it before publishing, and adjust if not.
 
-## Every release
+## Every release — GitHub Release (`.vsix` download)
 
-1. Bump `"version"` in `package.json` (semver — `vsce publish patch/minor/major`
-   can do this for you and tag the commit).
+1. Bump `"version"` in `package.json` (semver).
 2. Add a new dated section to `CHANGELOG.md`.
 3. `npm test` — confirm the full suite is green.
 4. `npm run build` — confirm a clean type-check + bundle.
@@ -51,13 +59,38 @@ credentialed, outward-facing action. Nothing here has been executed for you.
    renders, edit round-trips, theme looks right) — nothing in this repo's
    automated test suite paints pixels, so this is the one check that
    actually looks at what a user will see.
-6. Publish:
+6. Commit the `package.json`/`CHANGELOG.md` bump on `main`, then tag and
+   push:
+   ```sh
+   git tag v<version>   # e.g. v0.0.2 — must match package.json exactly
+   git push origin v<version>
+   ```
+   `.github/workflows/release.yml` picks up the tag, re-runs the test suite
+   and build in CI (validating the tag matches `package.json`'s version),
+   and publishes a GitHub Release with `mindmap-view-<version>.vsix`
+   attached — watch it at the repo's Actions tab. If it fails, fix the
+   issue, delete the tag (`git tag -d v<version> && git push origin
+   :refs/tags/v<version>`), and re-tag once fixed; nothing partial is left
+   behind since the release step only runs after tests+package succeed.
+7. Once published, the release is at
+   `https://github.com/<owner>/<repo>/releases/tag/v<version>` — anyone can
+   download the `.vsix` and install it via "Install from VSIX..." without a
+   Marketplace listing.
+
+## When ready — VS Code Marketplace (`vsce publish`)
+
+A separate, later, fully manual step — do this once you're satisfied with
+GitHub-release testing, not automatically on every tag.
+
+1. Complete "One-time setup" above if you haven't (publisher id, PAT,
+   `repository` field, icon).
+2. From the same tagged commit:
    ```sh
    npx @vscode/vsce publish -p <your-PAT>
    ```
    or `npx @vscode/vsce login <publisher>` once, then `npx @vscode/vsce publish`
    for subsequent releases without repeating the PAT each time.
-7. Confirm the new version shows up on the Marketplace listing
+3. Confirm the new version shows up on the Marketplace listing
    (https://marketplace.visualstudio.com/items?itemName=<publisher>.mindmap-view)
    — propagation is usually within a few minutes.
 
