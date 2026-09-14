@@ -2428,3 +2428,50 @@ instead of `Beside` (`-2`). 504 tests pass (test count unchanged — an
 assertion value update, not a new test). `tsc -noEmit` clean on both
 configs. Both directions ("Go to note section" and "Go to Mind Map Node")
 are now consistent: same-column new tab, never a split.
+
+## 2026-09-14 — Bug fix: `.vscodeignore`'s root-level `*.md` exclude missed a nested scratch note; new release pipeline added
+
+**Problem (found while building `.github/workflows/release.yml`):** testing
+`npm run package` end-to-end for the new CI release pipeline (see below)
+showed `MindMaps/ToolNotes.md` bundled into the `.vsix` — the exact same
+class of leak as the two prior fixes (M5's `MindMapBaba.md`, Phase D's
+root-level `ToolNotes.md`, `c07cf0c`'s "blanket-exclude root .md files"),
+except this scratch note had since been relocated from the repo root into
+a new `MindMaps/` subfolder, and `c07cf0c`'s fix only anchored `*.md` to
+the root — `.vscodeignore`'s matcher does not treat a bare `*.md` as
+recursive the way plain `.gitignore` does.
+
+**Decision:** widened the pattern from `*.md` to `**/*.md` in
+`.vscodeignore` (allowlist `!README.md`/`!CHANGELOG.md` unchanged — both
+only ever exist at the root). Verified: `npm run package`'s file listing
+no longer includes `MindMaps/ToolNotes.md` or any other non-root `.md`,
+only `readme.md`/`changelog.md`. `mindmap-view-0.0.1.vsix`: 49.32 KB (9
+files, down from 10 with the leaked file included).
+
+**A second, unrelated packaging bug found in the same pass:**
+`npm run package` crashed outright (not just leaked a file) whenever
+CodeGraph's local index (`.codegraph/`) is present — gitignored, so it's
+absent from a fresh CI checkout, but present for any human who has this
+repo CodeGraph-indexed and follows `RELEASING.md`'s own instruction to run
+`npm run package` locally before tagging. `vsce`'s secret scanner tried to
+`readFile` every candidate path including `.codegraph/daemon.sock` (a live
+Unix socket, not a regular file) and threw. `.vscodeignore` never excluded
+`.codegraph/` at all, so vsce saw it as a normal (5.64 MB!) candidate
+directory. Fixed by adding `.codegraph/**` to `.vscodeignore` alongside
+the existing `.vscode/**`/`.vscode-test/**`/`.github/**` exclusions.
+Verified: `npm run package` now completes cleanly with `.codegraph/`
+present, same 9-file/49.32 KB output as without it.
+
+**Also added — release pipeline (user request):** `.github/workflows/
+release.yml`, overriding this repo's prior "no GitHub Actions" rule
+(CLAUDE.md updated to reflect the new decision, user-confirmed). Pushing a
+`vX.Y.Z` tag on `main` validates the tag against `package.json`'s version,
+runs the test suite, packages the `.vsix` (`npm run package` — the same
+command exercised above), and publishes it as a GitHub Release via `gh
+release create`, so users can install via "Install from VSIX" without
+waiting on a Marketplace listing (which stays a separate, later, fully
+manual `vsce publish` step — `RELEASING.md` updated to document both
+paths). Modeled directly on the reference Obsidian repo's own `release.yml`
+(tag-push trigger, tag/manifest-version cross-check, `gh release create`
+with `--generate-notes` + a custom notes header) adapted for `vsce
+package` instead of a plugin zip. Not yet tagged/pushed — pending review.

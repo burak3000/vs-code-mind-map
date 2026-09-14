@@ -2,6 +2,12 @@
 .vscode-test/**
 .github/**
 
+# CodeGraph's local index (gitignored, never checked into git, but not
+# excluded here before this line — vsce's secret scanner would try to read
+# every file under it, including a live daemon's Unix socket, and crash
+# packaging entirely for anyone with CodeGraph indexing this repo).
+.codegraph/**
+
 # esbuild bundles every dependency (currently just d3-flextree) directly
 # into dist/extension.js and media/webview.js — nothing here is require()'d
 # at runtime, so shipping it would only add dead weight to the .vsix.
@@ -25,16 +31,17 @@ package-lock.json
 esbuild.config.mjs
 
 # Design/process docs, agent-facing project instructions, and any scratch
-# note a human drops in the repo root while manually testing (e.g.
-# ToolNotes.md, MindMapBaba.md) — a blanket root-level *.md exclude with an
-# explicit allowlist, not a per-filename list: the previous version named
-# specific files (CLAUDE.md, DECISIONS.md, ..., MindMapBaba.md) one at a
-# time, which is exactly the kind of list that silently misses the *next*
-# stray note (this is how ToolNotes.md leaked into a .vsix before this
-# fix — see DECISIONS.md's dated entry). Only README.md/CHANGELOG.md ship;
-# everything else at the root, present today or added later, is excluded
-# by default instead of by name.
-*.md
+# note a human drops anywhere in the repo while manually testing (e.g.
+# ToolNotes.md, MindMapBaba.md, MindMaps/ToolNotes.md) — a blanket **/*.md
+# exclude with an explicit allowlist, not a per-filename list: the original
+# version named specific files one at a time (silently missed the next
+# stray note); a follow-up narrowed it to root-level *.md only, which
+# still missed a scratch note relocated into a subfolder (MindMaps/
+# ToolNotes.md leaked into a .vsix under that version — see DECISIONS.md's
+# dated entries). Only README.md/CHANGELOG.md ship, at any depth they
+# might appear; everything else named *.md, wherever it lives, present
+# today or added later, is excluded by default instead of by name or path.
+**/*.md
 !README.md
 !CHANGELOG.md
 

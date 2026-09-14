@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: release-${{ github.ref_name }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Validate tag format and derive version
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          if [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+          else
+            echo "::error::Tag '$TAG' does not match the required vX.Y.Z format (e.g. v0.0.1)."
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Derived VERSION=$VERSION from tag $TAG"
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Confirm tag is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Commit $GITHUB_SHA (tag $GITHUB_REF_NAME) is not an ancestor of origin/main. Releases may only be tagged from main."
+            exit 1
+          fi
+          echo "Confirmed $GITHUB_SHA is on main."
+
+      - name: Validate package.json version matches tag
+        run: |
+          PKG_VERSION="$(jq -r .version package.json)"
+          if [[ "$PKG_VERSION" != "$VERSION" ]]; then
+            echo "::error::package.json version '$PKG_VERSION' does not match tag-derived version '$VERSION'. Bump package.json before tagging."
+            exit 1
+          fi
+
+          PKG_NAME="$(jq -r .name package.json)"
+          ENGINES_VSCODE="$(jq -r '.engines.vscode // empty' package.json)"
+          echo "PKG_NAME=$PKG_NAME" >> "$GITHUB_ENV"
+          echo "ENGINES_VSCODE=$ENGINES_VSCODE" >> "$GITHUB_ENV"
+          echo "package.json agrees with tag-derived version $VERSION."
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Package extension (build + vsce package)
+        run: npm run package
+
+      - name: Verify package artifact
+        run: |
+          VSIX_NAME="${PKG_NAME}-${VERSION}.vsix"
+          if [[ ! -f "$VSIX_NAME" ]]; then
+            echo "::error::Expected $VSIX_NAME to exist after npm run package, but it doesn't."
+            ls -la ./*.vsix 2>/dev/null || echo "(no .vsix files found)"
+            exit 1
+          fi
+          echo "VSIX_NAME=$VSIX_NAME" >> "$GITHUB_ENV"
+          echo "Verified $VSIX_NAME exists ($(du -h "$VSIX_NAME" | cut -f1))."
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s\n' \
+            "Mind Map View ${VERSION}" \
+            "" \
+            "Requires VS Code ${ENGINES_VSCODE:-a recent version}." \
+            "" \
+            "### Install" \
+            "This release is **not on the VS Code Marketplace yet** — download \`${VSIX_NAME}\` below, then either:" \
+            "- In VS Code: open the Extensions view, click the \`...\` menu, choose **Install from VSIX...**, and select the downloaded file; or" \
+            "- From a terminal: \`code --install-extension ${VSIX_NAME}\`" \
+            > notes-header.md
+
+          gh release create "$GITHUB_REF_NAME" \
+            "$VSIX_NAME" \
+            --verify-tag \
+            --generate-notes \
+            --notes-file notes-header.md
