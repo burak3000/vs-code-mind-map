@@ -2,7 +2,7 @@
 	"name": "mindmap-view",
 	"displayName": "Mind Map View",
 	"description": "Mind mapping custom editor for markdown files, with true bidirectional sync.",
-	"version": "0.0.1",
+	"version": "0.0.2",
 	"publisher": "TODO-set-publisher-id",
 	"private": true,
 	"license": "MIT",

@@ -3,10 +3,25 @@
 All notable changes to the Mind Map View extension. This covers milestones
 M0–M5 of the initial port from the Obsidian reference plugin, plus a
 post-M5 catch-up bringing over feature work the reference plugin gained
-afterward; there has been no public release yet (`version` in
-`package.json` is still `0.0.1`).
+afterward.
 
-## Unreleased — Fixes, and "Go to Mind Map Node"
+## 0.0.2 — 2026-09-14
+
+First public release — distributed as a GitHub Release (`.vsix` download,
+install via "Install from VSIX"; see [RELEASING.md](RELEASING.md)) ahead of
+a VS Code Marketplace listing.
+
+### Release pipeline
+
+- Added `.github/workflows/release.yml`: pushing a `vX.Y.Z` tag now builds,
+  tests, packages, and publishes a GitHub Release with the `.vsix`
+  attached automatically.
+- **Fix:** the packaged `.vsix` could pick up `.md` scratch notes anywhere
+  in the tree, not just the repo root (e.g. `MindMaps/ToolNotes.md`), and
+  `npm run package` crashed outright when this repo's local CodeGraph
+  index was present. Both fixed in `.vscodeignore`.
+
+### Fixes, and "Go to Mind Map Node"
 
 - **New:** "Go to Mind Map Node" — the inverse of "Go to note section."
   Right-click anywhere in a markdown file's plain text editor for a context
@@ -23,7 +38,7 @@ afterward; there has been no public release yet (`version` in
   the repo root (e.g. a manual-testing `.md` file); only `README.md`/
   `CHANGELOG.md` ship now, by default rather than by name.
 
-## Unreleased — Post-M5 catch-up: node relations & status badges
+### Post-M5 catch-up: node relations & status badges
 
 Catch-up work bringing this extension in line with feature additions made
 to the reference Obsidian plugin after this repo's M0 port point. Not part
@@ -43,7 +58,7 @@ of the original M0–M5 milestone plan.
   six plus "Clear status"; the same options are also in the right-click
   context menu.
 
-## Unreleased — M5: hardening & release readiness
+### M5: hardening & release readiness
 
 - Webview state persistence: the selection and the exact pan/zoom now
   survive a hidden→revealed webview reload, via `vscode.getState`/`setState`.
