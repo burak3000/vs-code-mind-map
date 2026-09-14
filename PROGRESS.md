@@ -8,7 +8,7 @@ Implementation is done by a Sonnet 5 agent, milestone by milestone, with a
 review gate after each milestone; performance trade-offs are decided by the
 user, never by the agent (rule 3).
 
-_Last updated: 2026-07-20 (Phase D of the post-M5 catch-up completed — trademark scrub, README/CHANGELOG updates for node relations and status badges, a final consolidated benchmark re-run (492 tests, all budgets clear), and re-packaging (48.33 KB vs. the 500 KB target). The whole post-M5 catch-up (Phases A–D) is now complete; see PROGRESS.md's dated Phase D section and DECISIONS.md's dated Phase D entry)._
+_Last updated: 2026-07-27 (five post-Phase-D commits: a same-file-wikilink open fix, a `.vscodeignore` packaging fix, two new VS Code-native features ("Go to Mind Map Node", "Center"), and a mixed fix/decision commit covering CRLF write-back, height-aware Rebalance, and a "Go to note section"/"Go to Mind Map Node" column-behavior revision. 504 tests pass, up from Phase D's 492; see the new "Post-Phase-D" section below)._
 
 ## Milestone status
 
@@ -620,6 +620,111 @@ DECISIONS.md's dated "Phase D" entry; summary:
 relations and status badges are fully re-synced, wired to VS Code UI, and
 documented; docs, benchmarks, and packaging all reflect the final state;
 no escalation remains open.
+
+## Post-Phase-D: fixes and small features (2026-07-21 – 2026-07-27)
+
+Five commits landed after Phase D, none part of the original plan or the
+post-M5 catch-up — bug reports and small user-requested features found in
+day-to-day use of the packaged extension. Not milestone-scoped, so tracked
+here as a flat list rather than a lettered phase. Full writeups in
+DECISIONS.md's dated entries for each.
+
+- **[`a0d7ece`](https://github.com/burak3000/vscode-mind-map/commit/a0d7ece01ddc7629fb87fb51956c12a769e70367) — Fix: same-file wikilink click tried
+  to open a nonexistent file.** Ctrl/Cmd+click on a same-doc relation link
+  (e.g. `[[#^blockid]]` — exactly what Phase C's relation feature produces)
+  was forwarded to the host unconditionally, which mangled the empty
+  file part into a bogus filename and always failed to open it. Reported
+  via `ToolNotes.md` (`^3xv1d0`). Fixed by resolving same-file wikilinks
+  in the webview (the only place with the live model) before ever
+  reaching the host — a resolvable target focuses the node in-place via
+  the existing `focusNode`; an unresolvable one (dangling id, bare
+  heading link) is now a silent no-op instead of a doomed file-open.
+  Classification logic hand-mirrors the protected `model/relations.ts`'s
+  private `isSameFileTarget`/`classifyLink` (not exported, so kept as a
+  maintained duplicate — same precedent as the host's existing
+  `isUrlTarget`/`isAbsoluteFilesystemPath` copies). 494 tests (up from
+  492); ported core untouched.
+- **[`c07cf0c`](https://github.com/burak3000/vscode-mind-map/commit/c07cf0caee9007101f0cbe8d8e01814498daf079) — Fix `.vscodeignore`: blanket-exclude
+  root `.md` files instead of by name.** Re-packaging after the wikilink
+  fix leaked the new `ToolNotes.md` scratch file into the `.vsix` — the
+  per-filename exclusion approach (M5's `MindMapBaba.md`, Phase D's
+  cleanup) was structurally guaranteed to miss the next one. Replaced
+  with a blanket `*.md` exclude plus a two-line allowlist
+  (`!README.md`, `!CHANGELOG.md`). Verified via `npm run package`'s file
+  listing. `mindmap-view-0.0.1.vsix`: 48.45 KB.
+- **[`6de9d76`](https://github.com/burak3000/vscode-mind-map/commit/6de9d76173e3d297eb010218f1e13f7f2a9d86a0) — New: "Go to Mind Map Node"** (the
+  inverse of "Go to note section," no reference-plugin counterpart).
+  Right-click anywhere in a markdown file's plain-text editor
+  (`contributes.menus`, `editor/context`, markdown-only) to open/reveal
+  that file's mind map and select the node nearest the cursor. Host
+  (`MindMapEditorProvider.ts`) stays a dumb relay per CLAUDE.md rule 7 —
+  forwards only the raw cursor line, never touches a model; a not-yet-open
+  panel queues the line in a new `pendingFocusLines` map until its "ready"
+  handshake arrives. Webview's new `focusNodeAtLine` resolves the line
+  against the live model (mirrors `sync/goToSection.ts`'s
+  `findNodeLine`, inverted, as new platform-layer code — not an
+  unauthorized core edit). 498 tests (up from 494); ported core unchanged.
+- **[`e2f83b1`](https://github.com/burak3000/vscode-mind-map/commit/e2f83b16a540d956e18ea9264b312dc67d957a7b) — New: "Center" context-menu item +
+  plain `Home` shortcut** (no reference-plugin equivalent — user request).
+  Re-centers the view on the selected node at the *current* zoom level,
+  unlike Ctrl/Cmd+Home which resets to the root at scale 1. New minimal
+  `centerNode(nodeId)` in `webview/main.ts` calling the existing
+  `SvgRenderer.centerOnWorldPoint` — deliberately not reusing `focusNode`,
+  which also unfolds ancestors/reselects (redundant for an already-visible
+  selected node). Plain `Home` keydown branch needed no
+  `contributes.keybindings` entry (not on VS Code's intercepted-chord
+  list). 500 tests (up from 498); ported core unchanged.
+- **[`244cb05`](https://github.com/burak3000/vscode-mind-map/commit/244cb05c6dc0744fa0b5f6bebaae2565e611d436) — Three fixes + a UX revision**
+  (commit message says "refactor," but the actual diff is functional —
+  see DECISIONS.md's four dated 2026-07-25 entries for full writeups):
+  - **CRLF write-back bug:** `serializeMindMap` always joins with `\n`,
+    and the host wrote that text verbatim via `WorkspaceEdit.replace`
+    without consulting `document.eol` — on a CRLF document (Windows
+    default), every mind-map edit silently flattened the *entire file* to
+    LF. Fixed in `applyWriteback` (`src/MindMapEditorProvider.ts`):
+    convert back to `\r\n` before writing when `document.eol` is CRLF.
+    Reads were never affected (parser already splits on `/\r?\n/`).
+  - **Rebalance weighted by node count, not rendered height:** on a
+    two-branch map, `assignInitialSplit` (`webview/layout/sides.ts`)
+    picked sides by descendant *count*, blind to per-node rendered
+    height (wrapped text, image thumbnails) — a branch with a few tall
+    nodes stayed visibly taller than a branch with many short ones no
+    matter how many times you rebalanced. Fixed via a new
+    `estimateSubtreeHeight` export in `webview/layout/layoutEngine.ts`
+    (O(N) walk reusing the existing `nodeBoxFor` cache, respecting
+    `folded`); `assignMissingSides`/`assignInitialSplit` now take the
+    `LayoutConfig` needed to compute it. Roughly doubles Rebalance's own
+    cost only (not per-edit cost) — measured via `bench:m1`: 5,000 nodes
+    parse+sides 8.3 ms, layout 30.3 ms, well inside the 2,000 ms open
+    budget. **Note:** this is the first change to `webview/layout/`
+    (previously byte-identical to the reference, alongside `model/`,
+    `sync/`, `controller/`) — a second known, intentional core exception
+    alongside M5's `SvgRenderer.getViewport`/`setViewport`, and unlike
+    that one, not a port of any reference-plugin commit (repo-local fix,
+    no reference-side counterpart).
+  - **"Go to note section" / "Go to Mind Map Node" column revision:**
+    supersedes the 2026-07-17 escalation decision. The user found
+    `ViewColumn.Beside` (chosen then) disruptive — it always splits the
+    editor area, when what they wanted was just a new tab in the same
+    column. Both commands (`goToSection` and `goToMindMapNode`'s
+    "not open yet" branch) now use `ViewColumn.Active` instead;
+    VS Code still tracks the mind map and the plain-text editor as
+    distinct tabs on the same URI, so the non-active side stays open and
+    untouched — only the split is gone. `goToMindMapNode`'s "already
+    open" branch (`existing.panel.reveal()`) was unaffected either way.
+  - Tests: 501 (CRLF fix) → 504 (Rebalance fix; column revisions were
+    assertion updates, not new tests) — up from 500. `tsc -noEmit` clean
+    on both configs throughout.
+  - Also added: `.codegraph/` (CodeGraph index, gitignored) and
+    `MindMaps/ToolNotes.md` (the scratch bug-tracking note referenced by
+    `a0d7ece`'s commit message).
+
+**Net since Phase D:** 504 tests (up from 492), `.vsix` at 48.45 KB, two
+new user-facing features, three bug fixes, one UX revision, and one new
+(intentional, unported) divergence in `webview/layout/` alongside the
+existing `render/SvgRenderer.ts` one. Not committed further — these five
+commits are already on `main`; nothing from this update was authored by
+the agent past documenting them.
 
 ## Decisions taken so far
 
